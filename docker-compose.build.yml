@@ -2,10 +2,8 @@ version: '3.8'
 
 services:
   outlook-mail-local:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: outlookemail:local
+    image: ghcr.io/kaibush/outlookemail:latest
+    pull_policy: always
     container_name: outlook-mail-local
     ports:
       - "5000:5000"
@@ -24,7 +22,7 @@ services:
       # 用 docker-compose 管理时删掉下面两行，保留给用户按需启用
       # - DOCKER_UPDATE_ENABLED=true
       # - DOCKER_UPDATE_CONTAINER=outlook-mail
-    # 镜像标签建议用 mutable tag（latest / main / dev）以便自更新；如用固定版本号（v2.0.x）则无更新能力
+    # 使用 fork 仓库 GitHub Actions 推送到 GHCR 的镜像，不再在本机构建
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f --max-time 4 http://127.0.0.1:5000/ || exit 1"]
