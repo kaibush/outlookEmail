@@ -51,3 +51,8 @@ docker-compose.yml
 # 文档
 README.md
 *.md
+
+# Local agent and tooling state
+.trellis/
+.agents/
+.codex/
