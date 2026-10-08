@@ -343,6 +343,8 @@
                     refresh: document.getElementById('refreshSelectedBtn'),
                     enableForwarding: document.getElementById('refreshEnableForwardingBtn'),
                     disableForwarding: document.getElementById('refreshDisableForwardingBtn'),
+                    enableAccounts: document.getElementById('refreshEnableAccountsBtn'),
+                    disableAccounts: document.getElementById('refreshDisableAccountsBtn'),
                     proxy: document.getElementById('refreshProxyBtn'),
                     delete: document.getElementById('refreshDeleteSelectedBtn'),
                 },
@@ -567,6 +569,12 @@
             const selectedAccounts = getSelectedRefreshAccounts();
             const enableForwardingCount = selectedAccounts.filter(account => !account.forward_enabled).length;
             const disableForwardingCount = selectedAccounts.filter(account => !!account.forward_enabled).length;
+            const selectedStatusById = new Map(selectedAccounts.map(account => [
+                Number(account.id),
+                String(account.status || 'active').trim().toLowerCase() === 'inactive' ? 'inactive' : 'active',
+            ]));
+            const enableAccountCount = selectedIds.filter(accountId => selectedStatusById.get(accountId) === 'inactive').length;
+            const disableAccountCount = selectedIds.filter(accountId => (selectedStatusById.get(accountId) || 'active') !== 'inactive').length;
 
             const modalEl = document.getElementById('refreshModal');
             modalEl?.classList.toggle('refresh-selection-mode', refreshModalState.selectionMode);
@@ -641,6 +649,29 @@
                     disableForwardingBtn.textContent = disableForwardingCount > 0 && disableForwardingCount !== selectedIds.length
                         ? `取消转发 (${disableForwardingCount})`
                         : '取消转发';
+                }
+            }
+
+            const enableAccountsBtn = document.getElementById('refreshEnableAccountsBtn');
+            const disableAccountsBtn = document.getElementById('refreshDisableAccountsBtn');
+            const isStatusUpdating = enableAccountsBtn?.dataset.loading === 'true'
+                || disableAccountsBtn?.dataset.loading === 'true';
+            if (enableAccountsBtn) {
+                enableAccountsBtn.disabled = !hasSelection || enableAccountCount === 0 || refreshModalState.isRunning || isStatusUpdating;
+                enableAccountsBtn.title = hasSelection && enableAccountCount === 0 ? '所选账号已全部启用' : '';
+                if (enableAccountsBtn.dataset.loading !== 'true') {
+                    enableAccountsBtn.textContent = enableAccountCount > 0 && enableAccountCount !== selectedIds.length
+                        ? `启用账号 (${enableAccountCount})`
+                        : '启用账号';
+                }
+            }
+            if (disableAccountsBtn) {
+                disableAccountsBtn.disabled = !hasSelection || disableAccountCount === 0 || refreshModalState.isRunning || isStatusUpdating;
+                disableAccountsBtn.title = hasSelection && disableAccountCount === 0 ? '所选账号已全部停用' : '';
+                if (disableAccountsBtn.dataset.loading !== 'true') {
+                    disableAccountsBtn.textContent = disableAccountCount > 0 && disableAccountCount !== selectedIds.length
+                        ? `停用账号 (${disableAccountCount})`
+                        : '停用账号';
                 }
             }
 
@@ -1335,6 +1366,14 @@
 
         async function disableForwardingForSelectedRefreshAccounts() {
             return withRefreshAccountBatchContext(() => updateForwardingForSelectedAccounts(false));
+        }
+
+        async function enableSelectedRefreshAccounts() {
+            return withRefreshAccountBatchContext(() => updateStatusForSelectedAccounts('active'));
+        }
+
+        async function disableSelectedRefreshAccounts() {
+            return withRefreshAccountBatchContext(() => updateStatusForSelectedAccounts('inactive'));
         }
 
         function showRefreshBatchProxyModal() {

@@ -3378,6 +3378,65 @@ def update_accounts_forwarding_by_ids(account_ids: List[int], forward_enabled: b
         return {'success': False, 'error': str(e)}
 
 
+def update_accounts_status_by_ids(account_ids: List[int], status: str) -> Dict[str, Any]:
+    """批量更新账号启用状态。一次调用内部分批写入，避免逐条请求和 SQLite 变量上限。"""
+    normalized_status = str(status or '').strip().lower()
+    if normalized_status not in {'active', 'inactive'}:
+        return {'success': False, 'error': '状态只能是 active 或 inactive'}
+
+    normalized_ids = normalize_account_ids(account_ids)
+    if not normalized_ids:
+        return {'success': False, 'error': '请选择要修改的账号'}
+
+    db = get_db()
+    rows = []
+    select_sql = """
+        SELECT id, email, COALESCE(status, 'active') AS status
+        FROM accounts
+        WHERE id IN ({placeholders})
+        ORDER BY email COLLATE NOCASE ASC
+    """
+    for chunk_ids in chunk_account_ids(normalized_ids):
+        placeholders = ','.join('?' * len(chunk_ids))
+        rows.extend(db.execute(select_sql.format(placeholders=placeholders), chunk_ids).fetchall())
+
+    if not rows:
+        return {'success': False, 'error': '未找到可修改的账号'}
+
+    existing_id_set = {int(row['id']) for row in rows}
+    missing_ids = [account_id for account_id in normalized_ids if account_id not in existing_id_set]
+    updated_rows = [
+        row for row in rows
+        if normalize_account_status(row['status']) != normalized_status
+    ]
+    updated_ids = [int(row['id']) for row in updated_rows]
+    updated_accounts = [{'id': int(row['id']), 'email': row['email']} for row in updated_rows]
+    unchanged_count = len(rows) - len(updated_rows)
+
+    update_sql = """
+        UPDATE accounts
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id IN ({placeholders})
+    """
+    try:
+        for chunk_ids in chunk_account_ids(updated_ids):
+            placeholders = ','.join('?' * len(chunk_ids))
+            db.execute(update_sql.format(placeholders=placeholders), [normalized_status, *chunk_ids])
+        if updated_ids:
+            db.commit()
+        return {
+            'success': True,
+            'status': normalized_status,
+            'updated_count': len(updated_ids),
+            'updated_accounts': updated_accounts,
+            'unchanged_count': unchanged_count,
+            'missing_ids': missing_ids,
+        }
+    except Exception as exc:
+        db.rollback()
+        return {'success': False, 'error': str(exc)}
+
+
 def update_accounts_proxy_by_ids(account_ids: List[int], proxy_url: str = '',
                                  fallback_proxy_url_1: str = '',
                                  fallback_proxy_url_2: str = '') -> Dict[str, Any]:

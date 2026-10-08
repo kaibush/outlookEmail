@@ -1,4 +1,4 @@
-        /* global accountPaginationState, accountsCache, clearEmailSelection, closeModal, copyTextToClipboard, currentAccount, currentAccountListSource, currentEmailDetail, currentGroupId, deleteAccount, getSelectedForwardChannels, handleApiError, hideModal, invalidateAccountCaches, isTempEmailGroup, loadAccountsByGroup, loadGroups, loadTags, refreshVisibleAccountList, renderEmailList, selectedEmailIds, setModalVisible, showModal, showToast, startSelectedAccountExport, updateBatchActionBar */
+        /* global accountPaginationState, accountsCache, clearEmailSelection, closeModal, copyTextToClipboard, currentAccount, currentAccountListSource, currentAccountSummary, currentEmailDetail, currentGroupId, deleteAccount, getSelectedForwardChannels, handleApiError, hideModal, invalidateAccountCaches, isTempEmailGroup, loadAccountsByGroup, loadGroups, loadTags, refreshVisibleAccountList, renderEmailList, selectedEmailIds, setModalVisible, showModal, showToast, startSelectedAccountExport, updateBatchActionBar, updateGraphSendMailAvailability */
 
         // ==================== 批量操作 ====================
 
@@ -222,6 +222,8 @@
             const batchExportBtn = document.getElementById('batchExportAccountsBtn');
             const batchEnableForwardingBtn = document.getElementById('batchEnableForwardingBtn');
             const batchDisableForwardingBtn = document.getElementById('batchDisableForwardingBtn');
+            const batchEnableAccountsBtn = document.getElementById('batchEnableAccountsBtn');
+            const batchDisableAccountsBtn = document.getElementById('batchDisableAccountsBtn');
             const batchProxyBtn = document.getElementById('batchProxyBtn');
             const batchAddTagBtn = document.getElementById('batchAddTagBtn');
             const batchRemoveTagBtn = document.getElementById('batchRemoveTagBtn');
@@ -234,6 +236,10 @@
             const disableForwardingChecked = checked.filter(cb => cb.dataset.forwardEnabled === 'true');
             const isForwardingUpdating = batchEnableForwardingBtn?.dataset.loading === 'true'
                 || batchDisableForwardingBtn?.dataset.loading === 'true';
+            const isStatusUpdating = batchEnableAccountsBtn?.dataset.loading === 'true'
+                || batchDisableAccountsBtn?.dataset.loading === 'true';
+            const enableAccountChecked = checked.filter(cb => (cb.dataset.accountStatus || 'active') === 'inactive');
+            const disableAccountChecked = checked.filter(cb => (cb.dataset.accountStatus || 'active') !== 'inactive');
             const isTempContext = !!isTempEmailGroup;
             const loadedAccountCount = allCheckboxes.length;
             const totalAccountCount = Number(accountPaginationState?.total) || loadedAccountCount;
@@ -247,6 +253,8 @@
             if (batchExportBtn) batchExportBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchEnableForwardingBtn) batchEnableForwardingBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchDisableForwardingBtn) batchDisableForwardingBtn.style.display = isTempContext ? 'none' : 'inline-flex';
+            if (batchEnableAccountsBtn) batchEnableAccountsBtn.style.display = isTempContext ? 'none' : 'inline-flex';
+            if (batchDisableAccountsBtn) batchDisableAccountsBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchProxyBtn) batchProxyBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchMoveGroupBtn) batchMoveGroupBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchAddTagBtn) batchAddTagBtn.style.display = 'inline-flex';
@@ -334,6 +342,28 @@
                             : '取消转发';
                     }
                 }
+                if (batchEnableAccountsBtn) {
+                    batchEnableAccountsBtn.disabled = enableAccountChecked.length === 0 || isStatusUpdating;
+                    batchEnableAccountsBtn.title = enableAccountChecked.length === 0
+                        ? '所选账号已全部启用'
+                        : '';
+                    if (batchEnableAccountsBtn.dataset.loading !== 'true') {
+                        batchEnableAccountsBtn.textContent = enableAccountChecked.length > 0
+                            ? `启用账号${enableAccountChecked.length !== checked.length ? ` (${enableAccountChecked.length})` : ''}`
+                            : '启用账号';
+                    }
+                }
+                if (batchDisableAccountsBtn) {
+                    batchDisableAccountsBtn.disabled = disableAccountChecked.length === 0 || isStatusUpdating;
+                    batchDisableAccountsBtn.title = disableAccountChecked.length === 0
+                        ? '所选账号已全部停用'
+                        : '';
+                    if (batchDisableAccountsBtn.dataset.loading !== 'true') {
+                        batchDisableAccountsBtn.textContent = disableAccountChecked.length > 0
+                            ? `停用账号${disableAccountChecked.length !== checked.length ? ` (${disableAccountChecked.length})` : ''}`
+                            : '停用账号';
+                    }
+                }
                 if (batchDeleteBtn) {
                     const isDeleting = batchDeleteBtn.dataset.loading === 'true';
                     batchDeleteBtn.disabled = isDeleting;
@@ -387,6 +417,18 @@
                     batchDisableForwardingBtn.textContent = '取消转发';
                     batchDisableForwardingBtn.title = '';
                 }
+                if (batchEnableAccountsBtn) {
+                    batchEnableAccountsBtn.disabled = false;
+                    batchEnableAccountsBtn.dataset.loading = 'false';
+                    batchEnableAccountsBtn.textContent = '启用账号';
+                    batchEnableAccountsBtn.title = '';
+                }
+                if (batchDisableAccountsBtn) {
+                    batchDisableAccountsBtn.disabled = false;
+                    batchDisableAccountsBtn.dataset.loading = 'false';
+                    batchDisableAccountsBtn.textContent = '停用账号';
+                    batchDisableAccountsBtn.title = '';
+                }
                 if (batchDeleteBtn) {
                     batchDeleteBtn.disabled = false;
                     batchDeleteBtn.dataset.loading = 'false';
@@ -434,6 +476,9 @@
                         forward_enabled: typeof sourceAccount.forward_enabled === 'boolean'
                             ? sourceAccount.forward_enabled
                             : checkbox.dataset.forwardEnabled === 'true',
+                        status: (checkbox.dataset.accountStatus || sourceAccount.status || 'active') === 'inactive'
+                            ? 'inactive'
+                            : 'active',
                     };
                 })
                 .filter(Boolean);
@@ -457,6 +502,8 @@
                     outlookAutoAuth: document.getElementById('batchOutlookAutoAuthBtn'),
                     enableForwarding: document.getElementById('batchEnableForwardingBtn'),
                     disableForwarding: document.getElementById('batchDisableForwardingBtn'),
+                    enableAccounts: document.getElementById('batchEnableAccountsBtn'),
+                    disableAccounts: document.getElementById('batchDisableAccountsBtn'),
                     proxy: document.getElementById('batchProxyBtn'),
                     delete: document.getElementById('batchDeleteAccountsBtn'),
                 },
@@ -858,6 +905,111 @@
 
         async function disableForwardingForSelectedAccounts() {
             await updateForwardingForSelectedAccounts(false);
+        }
+
+        function normalizeSelectedAccountStatus(account) {
+            return String(account?.status || '').trim().toLowerCase() === 'inactive' ? 'inactive' : 'active';
+        }
+
+        function countAccountsNeedingStatus(accountIds, selectedAccounts, targetStatus) {
+            const statusById = new Map();
+            (Array.isArray(selectedAccounts) ? selectedAccounts : []).forEach(account => {
+                const accountId = normalizeAccountBatchId(account?.id);
+                if (accountId !== null) {
+                    statusById.set(accountId, normalizeSelectedAccountStatus(account));
+                }
+            });
+            return accountIds.filter(accountId => (statusById.get(accountId) || 'active') !== targetStatus).length;
+        }
+
+        function syncCurrentAccountStatus(accountIds, targetStatus) {
+            const currentId = Number(currentAccountSummary?.id);
+            if (!Number.isFinite(currentId) || !accountIds.includes(currentId)) {
+                return;
+            }
+            currentAccountSummary = {
+                ...currentAccountSummary,
+                status: targetStatus,
+            };
+            if (typeof updateGraphSendMailAvailability === 'function') {
+                updateGraphSendMailAvailability();
+            }
+        }
+
+        async function updateStatusForSelectedAccounts(targetStatus) {
+            const context = getCurrentAccountBatchSelectionContext();
+            if (context.isTempContext) {
+                showToast('临时邮箱不支持启用或停用', 'error');
+                return;
+            }
+            const enabling = targetStatus === 'active';
+            const btn = getAccountBatchButton(context, enabling ? 'enableAccounts' : 'disableAccounts');
+            if (!btn || btn.disabled) return;
+
+            const accountIds = getAccountBatchSelectedIds(context);
+            const eligibleCount = countAccountsNeedingStatus(
+                accountIds,
+                getAccountBatchSelectedAccounts(context),
+                targetStatus
+            );
+            const actionLabel = enabling ? '启用' : '停用';
+            const loadingLabel = enabling ? '启用中...' : '停用中...';
+            const finishedLabel = enabling ? '已全部启用' : '已全部停用';
+
+            if (!accountIds.length) {
+                showToast(`请先选择要${actionLabel}的账号`, 'error');
+                return;
+            }
+            if (!eligibleCount) {
+                showToast(`所选账号${finishedLabel}`, 'error');
+                return;
+            }
+
+            const skippedCount = accountIds.length - eligibleCount;
+            const confirmMessage = skippedCount > 0
+                ? `确定要${actionLabel}所选 ${accountIds.length} 个账号吗？其中 ${skippedCount} 个已${actionLabel}账号会自动跳过。`
+                : `确定要${actionLabel}所选 ${accountIds.length} 个账号吗？`;
+            if (!(await showConfirmModal(confirmMessage, { title: `${actionLabel}账号`, confirmText: '确认', danger: false }))) {
+                return;
+            }
+
+            btn.disabled = true;
+            btn.dataset.loading = 'true';
+            btn.textContent = loadingLabel;
+
+            try {
+                const response = await fetch('/api/accounts/batch-update-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        account_ids: accountIds,
+                        status: targetStatus
+                    })
+                });
+                const data = await response.json();
+
+                if (!data.success) {
+                    handleApiError(data, `批量${actionLabel}账号失败`);
+                    return;
+                }
+
+                syncCurrentAccountStatus(accountIds, targetStatus);
+                showToast(data.message || `已${actionLabel} ${eligibleCount} 个账号`, 'success');
+                await afterSuccessfulAccountBatchMutation(context);
+            } catch (error) {
+                showToast(`批量${actionLabel}账号失败`, 'error');
+            } finally {
+                btn.dataset.loading = 'false';
+                updateAccountBatchControls(context);
+            }
+        }
+
+        async function enableSelectedAccounts() {
+            await updateStatusForSelectedAccounts('active');
+        }
+
+        async function disableSelectedAccounts() {
+            await updateStatusForSelectedAccounts('inactive');
         }
 
         async function deleteSelectedAccounts() {

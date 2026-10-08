@@ -74,6 +74,7 @@
 | PUT | `/api/accounts/<account_id>/aliases` | Session + CSRF | JSON | 整体替换账号别名 |
 | POST | `/api/accounts/batch-update-group` | Session + CSRF | JSON | 批量改分组 |
 | POST | `/api/accounts/batch-update-forwarding` | Session + CSRF | JSON | 批量改转发开关 |
+| POST | `/api/accounts/batch-update-status` | Session + CSRF | JSON | 批量启用或停用账号 |
 | POST | `/api/accounts/batch-update-proxy` | Session + CSRF | JSON | 批量改账号级代理 |
 | GET | `/api/tags` | Session | JSON | 获取标签列表 |
 | POST | `/api/tags` | Session + CSRF | JSON | 创建标签 |
@@ -1141,6 +1142,36 @@ Content-Type: application/json
 
 | 字段 | 说明 |
 | --- | --- |
+| `updated_count` | 实际状态发生变化的账号数量 |
+| `updated_accounts` | 被更新的账号列表 |
+| `unchanged_count` | 原本就处于目标状态的账号数量 |
+| `missing_ids` | 未命中的账号 ID |
+
+### POST `/api/accounts/batch-update-status`
+
+批量启用或停用账号。服务端在一次请求里分批更新，适合一次勾选几千个账号，不会按账号逐个请求。
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `account_ids` | array<int> | 是 | 账号 ID 列表 |
+| `status` | string | 是 | `active` 表示启用，`inactive` 表示停用 |
+
+#### 请求示例
+
+```json
+{
+  "account_ids": [1, 2, 3],
+  "status": "inactive"
+}
+```
+
+#### 响应重点字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `status` | 实际写入的状态，`active` 或 `inactive` |
 | `updated_count` | 实际状态发生变化的账号数量 |
 | `updated_accounts` | 被更新的账号列表 |
 | `unchanged_count` | 原本就处于目标状态的账号数量 |

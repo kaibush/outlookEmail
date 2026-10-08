@@ -1504,6 +1504,7 @@
                            data-account-type="${escapeHtml(acc.account_type || 'outlook')}"
                            data-refreshable="${acc.account_type !== 'imap' ? 'true' : 'false'}"
                            data-forward-enabled="${acc.forward_enabled ? 'true' : 'false'}"
+                           data-account-status="${escapeHtml(acc.status || 'active')}"
                            onclick="handleAccountSelectionCheckboxClick(event)">
                     <div class="account-body">
                         <div class="account-title-row">

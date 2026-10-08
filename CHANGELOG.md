@@ -6,6 +6,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+### Added
+- 邮箱账号批量菜单新增「启用账号 / 停用账号」。一次请求可更新全部所选账号，勾选几千个账号时不会逐个调用接口。
+
 ## [3.0.10] - 2026-10-05
 
 ### Added

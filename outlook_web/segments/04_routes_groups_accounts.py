@@ -1184,6 +1184,42 @@ def api_batch_update_account_forwarding():
     })
 
 
+@app.route('/api/accounts/batch-update-status', methods=['POST'])
+@login_required
+def api_batch_update_account_status():
+    """批量启用或停用账号"""
+    data = request.get_json(silent=True) or {}
+    account_ids = data.get('account_ids', [])
+    if not isinstance(account_ids, (list, tuple)):
+        return jsonify({'success': False, 'error': '请选择要修改的账号'})
+
+    result = update_accounts_status_by_ids(account_ids, data.get('status'))
+    if not result.get('success'):
+        return jsonify(result)
+
+    action_label = '启用' if result.get('status') == 'active' else '停用'
+    updated_count = result.get('updated_count', 0)
+    unchanged_count = result.get('unchanged_count', 0)
+    if updated_count and unchanged_count:
+        message = f'已{action_label} {updated_count} 个账号，{unchanged_count} 个账号已处于该状态'
+    elif updated_count:
+        message = f'已{action_label} {updated_count} 个账号'
+    elif unchanged_count:
+        message = f'所选 {unchanged_count} 个账号已处于{action_label}状态'
+    else:
+        message = '没有可更新的账号'
+
+    return jsonify({
+        'success': True,
+        'message': message,
+        'status': result.get('status'),
+        'updated_count': updated_count,
+        'updated_accounts': result.get('updated_accounts', []),
+        'unchanged_count': unchanged_count,
+        'missing_ids': result.get('missing_ids', []),
+    })
+
+
 @app.route('/api/accounts/batch-update-proxy', methods=['POST'])
 @login_required
 def api_batch_update_account_proxy():
