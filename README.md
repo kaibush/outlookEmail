@@ -163,7 +163,7 @@ cp .env.example .env.local
 
 ```bash
 # 生成随机串后填入 .env.local 的 SECRET_KEY
-python -c 'import secrets; print(secrets.token_hex(32))'
+python3 -c 'import secrets; print(secrets.token_hex(32))'
 ```
 
 - `SECRET_KEY`：填入上面生成的随机串（务必修改，勿用占位值；首尾空白会被忽略）
@@ -180,7 +180,7 @@ docker compose -f docker-compose.build.yml up -d --build
 ```
 
 - `--build` 强制从源码重新构建镜像（镜像标签为 `outlookemail:local`）
-- 容器名为 `outlook-mail`，映射端口 `5000:5000`
+- 容器名为 `outlook-mail-local`，映射端口 `5000:5000`
 - 数据持久化在宿主机 `./data`；`./static`、`./templates` 以只读方式挂载，便于本地编辑模板/静态资源实时生效
 
 启动后访问 `http://localhost:5000`，使用 `.env.local` 中的 `LOGIN_PASSWORD` 登录。

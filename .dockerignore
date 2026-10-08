@@ -23,6 +23,14 @@ ENV/
 .git/
 .gitignore
 
+# Local configuration and persisted runtime state.  Compose injects
+# environment values via `env_file`, so secrets must never be copied into
+# the image build context.
+.env
+.env.*
+!.env.example
+data/
+
 # 数据库文件（使用 volume 挂载）
 *.db
 *.sqlite
