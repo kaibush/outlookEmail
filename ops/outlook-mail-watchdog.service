@@ -1,0 +1,15 @@
+[Unit]
+Description=Recover sustained Outlook mail container health failures
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/outlook-mail-watchdog/mail_watchdog.py
+StateDirectory=outlook-mail-watchdog
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=180
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
