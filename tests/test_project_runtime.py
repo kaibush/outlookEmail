@@ -3040,6 +3040,74 @@ class FrontendTimezoneBootstrapTests(unittest.TestCase):
         self.assertIn('<path d="M4.5 7L8 3.5 11.5 7"></path>', layout_html)
         self.assertIn('.app-version-chip__upgrade-badge[hidden] {', navbar_css)
 
+    def test_edit_account_can_generate_and_save_plus_aliases(self):
+        dialogs_html = pathlib.Path(
+            ROOT_DIR,
+            'templates',
+            'partials',
+            'index',
+            'dialogs-primary.html',
+        ).read_text(encoding='utf-8')
+        settings_js = pathlib.Path(
+            ROOT_DIR,
+            'static',
+            'js',
+            'index',
+            '07-settings.js',
+        ).read_text(encoding='utf-8')
+        core_js = pathlib.Path(
+            ROOT_DIR,
+            'static',
+            'js',
+            'index',
+            '01-core.js',
+        ).read_text(encoding='utf-8')
+        batch_js = pathlib.Path(
+            ROOT_DIR,
+            'static',
+            'js',
+            'index',
+            '10-batch-actions.js',
+        ).read_text(encoding='utf-8')
+        layout_html = pathlib.Path(
+            ROOT_DIR,
+            'templates',
+            'partials',
+            'index',
+            'layout.html',
+        ).read_text(encoding='utf-8')
+        management_html = pathlib.Path(
+            ROOT_DIR,
+            'templates',
+            'partials',
+            'index',
+            'dialogs-management.html',
+        ).read_text(encoding='utf-8')
+        account_css = pathlib.Path(
+            ROOT_DIR,
+            'static',
+            'css',
+            'index',
+            '04-account-panel.css',
+        ).read_text(encoding='utf-8')
+
+        self.assertIn('id="editAliasGenerateCount"', dialogs_html)
+        self.assertIn('onclick="generateAndSavePlusAliases()"', dialogs_html)
+        self.assertIn('function buildRandomAliasSuffix(length = 8)', core_js)
+        self.assertIn('function generatePlusAliasesForEmail(email, existingAliases = [], count = 10)', core_js)
+        self.assertIn('async function generateAndSavePlusAliases()', settings_js)
+        self.assertIn('`/api/accounts/${accountId}/aliases`', settings_js)
+        self.assertIn('generatePlusAliasesForEmail(email, existingAliases, count)', settings_js)
+        self.assertIn('id="batchGenerateAliasesBtn"', layout_html)
+        self.assertIn('onclick="showBatchGenerateAliasesModal()"', layout_html)
+        self.assertIn('id="batchGenerateAliasesModal"', management_html)
+        self.assertIn('async function confirmBatchGenerateAliases()', batch_js)
+        self.assertIn('async function getLatestAccountAliases(accountId)', batch_js)
+        self.assertIn('generatePlusAliasesForEmail(email, existingAliases, count)', batch_js)
+        self.assertIn('`/api/accounts/${accountId}/aliases`', batch_js)
+        self.assertIn('.alias-generate-row {', account_css)
+        self.assertIn('.alias-generate-count {', account_css)
+
     def test_refresh_management_ui_uses_account_workbench_layout(self):
         layout_html = pathlib.Path(ROOT_DIR, 'templates', 'partials', 'index', 'layout.html').read_text(encoding='utf-8')
         settings_html = pathlib.Path(ROOT_DIR, 'templates', 'partials', 'index', 'dialogs-management.html').read_text(encoding='utf-8')

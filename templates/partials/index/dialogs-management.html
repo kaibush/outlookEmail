@@ -686,6 +686,28 @@
         </div>
     </div>
 
+    <!-- 批量生成 + 别名模态框 -->
+    <div class="modal" id="batchGenerateAliasesModal" onmousedown="if(event.target === this) hideBatchGenerateAliasesModal()">
+        <div class="modal-content" style="width: 440px;">
+            <div class="modal-header">
+                <h3>批量生成 + 别名</h3>
+                <button class="modal-close" onclick="hideBatchGenerateAliasesModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="batchGenerateAliasesSummary" style="margin: 0 0 14px; line-height: 1.6;"></p>
+                <div class="form-group">
+                    <label class="form-label">每个邮箱生成数量</label>
+                    <input type="number" class="form-input" id="batchGenerateAliasesCount" value="10" min="1" max="50" step="1" oninput="updateBatchGenerateAliasesSummary()">
+                    <div class="form-hint">按“主邮箱+随机后缀”生成并追加保存，不覆盖账号已有别名。适用于 Outlook 等支持 + 子地址的邮箱。</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideBatchGenerateAliasesModal()">取消</button>
+                <button class="btn btn-primary" id="batchGenerateAliasesConfirmBtn" onclick="confirmBatchGenerateAliases()">生成并保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 通用确认模态框 -->
     <div class="modal" id="genericConfirmModal" onmousedown="if(event.target === this) hideGenericConfirmModal()">
         <div class="modal-content" style="width: 420px;">

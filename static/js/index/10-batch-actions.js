@@ -230,6 +230,7 @@
             const selectAllBtn = document.getElementById('accountSelectAllBtn');
             const batchRefreshBtn = document.getElementById('batchRefreshTokensBtn');
             const batchOutlookAutoAuthBtn = document.getElementById('batchOutlookAutoAuthBtn');
+            const batchGenerateAliasesBtn = document.getElementById('batchGenerateAliasesBtn');
             const batchCopyBtn = document.getElementById('batchCopyEmailsBtn');
             const batchExportBtn = document.getElementById('batchExportAccountsBtn');
             const batchEnableForwardingBtn = document.getElementById('batchEnableForwardingBtn');
@@ -262,6 +263,7 @@
 
             if (batchRefreshBtn) batchRefreshBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchOutlookAutoAuthBtn) batchOutlookAutoAuthBtn.style.display = isTempContext ? 'none' : 'inline-flex';
+            if (batchGenerateAliasesBtn) batchGenerateAliasesBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchExportBtn) batchExportBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchEnableForwardingBtn) batchEnableForwardingBtn.style.display = isTempContext ? 'none' : 'inline-flex';
             if (batchDisableForwardingBtn) batchDisableForwardingBtn.style.display = isTempContext ? 'none' : 'inline-flex';
@@ -310,6 +312,15 @@
                         batchOutlookAutoAuthBtn.textContent = autoAuthChecked.length > 0
                             ? `加入自动授权${autoAuthChecked.length !== checked.length ? ` (${autoAuthChecked.length})` : ''}`
                             : '加入自动授权';
+                    }
+                }
+                if (batchGenerateAliasesBtn) {
+                    const isGeneratingAliases = batchGenerateAliasesBtn.dataset.loading === 'true';
+                    batchGenerateAliasesBtn.disabled = checked.length === 0 || isGeneratingAliases;
+                    if (!isGeneratingAliases) {
+                        batchGenerateAliasesBtn.textContent = checked.length > 1
+                            ? `生成 + 别名 (${checked.length})`
+                            : '生成 + 别名';
                     }
                 }
                 if (batchCopyBtn) {
@@ -399,6 +410,11 @@
                     batchOutlookAutoAuthBtn.dataset.loading = 'false';
                     batchOutlookAutoAuthBtn.textContent = '加入自动授权';
                     batchOutlookAutoAuthBtn.title = '';
+                }
+                if (batchGenerateAliasesBtn) {
+                    batchGenerateAliasesBtn.disabled = false;
+                    batchGenerateAliasesBtn.dataset.loading = 'false';
+                    batchGenerateAliasesBtn.textContent = '生成 + 别名';
                 }
                 if (batchCopyBtn) {
                     batchCopyBtn.disabled = false;
@@ -513,6 +529,7 @@
                     export: document.getElementById('batchExportAccountsBtn'),
                     refresh: document.getElementById('batchRefreshTokensBtn'),
                     outlookAutoAuth: document.getElementById('batchOutlookAutoAuthBtn'),
+                    generateAliases: document.getElementById('batchGenerateAliasesBtn'),
                     enableForwarding: document.getElementById('batchEnableForwardingBtn'),
                     disableForwarding: document.getElementById('batchDisableForwardingBtn'),
                     enableAccounts: document.getElementById('batchEnableAccountsBtn'),
@@ -781,6 +798,153 @@
                 await copyTextToClipboard(emailList.join('\n'), `已复制 ${emailList.length} 个邮箱地址`);
             } finally {
                 btn.dataset.loading = 'false';
+                updateAccountBatchControls(context);
+            }
+        }
+
+        function updateBatchGenerateAliasesSummary() {
+            const context = getPendingAccountBatchModalContext();
+            const selectedCount = getAccountBatchSelectedIds(context).length;
+            const perAccountCount = Number.parseInt(document.getElementById('batchGenerateAliasesCount')?.value || '0', 10);
+            const summary = document.getElementById('batchGenerateAliasesSummary');
+            if (!summary) return;
+            const safePerAccountCount = Number.isFinite(perAccountCount) ? perAccountCount : 0;
+            summary.textContent = `将为 ${selectedCount} 个邮箱各生成 ${safePerAccountCount} 个 + 别名，共 ${selectedCount * Math.max(0, safePerAccountCount)} 个候选地址。`;
+        }
+
+        function showBatchGenerateAliasesModal() {
+            const context = setPendingAccountBatchModalContext();
+            if (context.isTempContext) {
+                showToast('临时邮箱不支持生成别名', 'error');
+                clearPendingAccountBatchModalContext();
+                return;
+            }
+            if (!getAccountBatchSelectedIds(context).length) {
+                showToast('请先选择要生成别名的邮箱', 'error');
+                clearPendingAccountBatchModalContext();
+                return;
+            }
+            const countInput = document.getElementById('batchGenerateAliasesCount');
+            if (countInput) {
+                countInput.value = '10';
+            }
+            updateBatchGenerateAliasesSummary();
+            showModal('batchGenerateAliasesModal');
+        }
+
+        function hideBatchGenerateAliasesModal() {
+            clearPendingAccountBatchModalContext();
+            hideModal('batchGenerateAliasesModal');
+        }
+
+        function getBatchAliasSaveError(data) {
+            const error = data?.error;
+            if (typeof error === 'string' && error.trim()) {
+                return error;
+            }
+            if (error && typeof error.message === 'string' && error.message.trim()) {
+                return error.message;
+            }
+            return '别名保存失败';
+        }
+
+        async function getLatestAccountAliases(accountId) {
+            const response = await fetch(`/api/accounts/${accountId}/aliases`);
+            const data = await response.json();
+            if (!response.ok || !data.success || !Array.isArray(data.aliases)) {
+                throw new Error(getBatchAliasSaveError(data));
+            }
+            return data.aliases;
+        }
+
+        async function confirmBatchGenerateAliases() {
+            const context = getPendingAccountBatchModalContext();
+            const selectedAccounts = getAccountBatchSelectedAccounts(context);
+            const count = Number.parseInt(document.getElementById('batchGenerateAliasesCount')?.value || '0', 10);
+            const confirmBtn = document.getElementById('batchGenerateAliasesConfirmBtn');
+            const batchBtn = getAccountBatchButton(context, 'generateAliases');
+            if (!selectedAccounts.length) {
+                showToast('请先选择要生成别名的邮箱', 'error');
+                return;
+            }
+            if (!Number.isFinite(count) || count < 1 || count > 50) {
+                showToast('每个邮箱生成数量必须是 1 到 50', 'error');
+                return;
+            }
+
+            if (confirmBtn) {
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = '生成中...';
+            }
+            if (batchBtn) {
+                batchBtn.dataset.loading = 'true';
+                batchBtn.disabled = true;
+            }
+
+            let successCount = 0;
+            const failures = [];
+            for (let index = 0; index < selectedAccounts.length; index += 1) {
+                const account = selectedAccounts[index];
+                const accountId = normalizeAccountBatchId(account.id);
+                const email = String(account.email || '').trim();
+                if (!accountId || !email) {
+                    failures.push(`第 ${index + 1} 个账号信息无效`);
+                    continue;
+                }
+
+                let existingAliases;
+                try {
+                    existingAliases = await getLatestAccountAliases(accountId);
+                } catch (error) {
+                    failures.push(`${email}: 无法读取现有别名，已跳过`);
+                    continue;
+                }
+
+                const { aliases, generatedCount } = generatePlusAliasesForEmail(email, existingAliases, count);
+                if (!generatedCount) {
+                    failures.push(`${email}: 无法生成别名`);
+                    continue;
+                }
+
+                if (confirmBtn) {
+                    confirmBtn.textContent = `生成中 ${index + 1}/${selectedAccounts.length}`;
+                }
+                try {
+                    const response = await fetch(`/api/accounts/${accountId}/aliases`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ aliases })
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        successCount += 1;
+                    } else {
+                        failures.push(`${email}: ${getBatchAliasSaveError(data)}`);
+                    }
+                } catch (error) {
+                    failures.push(`${email}: 请求失败`);
+                }
+            }
+
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = '生成并保存';
+            }
+            if (batchBtn) {
+                batchBtn.dataset.loading = 'false';
+            }
+            hideBatchGenerateAliasesModal();
+
+            if (failures.length) {
+                const detail = failures.slice(0, 2).join('；');
+                showToast(`成功 ${successCount} 个，失败 ${failures.length} 个：${detail}`, 'error');
+            } else {
+                showToast(`已为 ${successCount} 个邮箱各生成并保存 ${count} 个别名`, 'success');
+            }
+
+            if (successCount > 0) {
+                await afterSuccessfulAccountBatchMutation(context);
+            } else {
                 updateAccountBatchControls(context);
             }
         }

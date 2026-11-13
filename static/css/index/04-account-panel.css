@@ -712,6 +712,17 @@
             word-break: break-word;
         }
 
+        .alias-generate-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .alias-generate-count {
+            width: 88px;
+            flex: 0 0 88px;
+        }
+
         .account-group-summary {
             display: flex;
             align-items: center;
@@ -1353,4 +1364,3 @@
             background-color: #eff6ff;
             color: #1e40af;
         }
-

@@ -2471,6 +2471,55 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function buildRandomAliasSuffix(length = 8) {
+            const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            const values = new Uint8Array(length);
+            if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+                window.crypto.getRandomValues(values);
+            } else {
+                for (let index = 0; index < length; index += 1) {
+                    values[index] = Math.floor(Math.random() * 256);
+                }
+            }
+            return Array.from(values, value => alphabet[value % alphabet.length]).join('');
+        }
+
+        function generatePlusAliasesForEmail(email, existingAliases = [], count = 10) {
+            const normalizedEmail = String(email || '').trim().toLowerCase();
+            const atIndex = normalizedEmail.lastIndexOf('@');
+            if (atIndex <= 0 || atIndex === normalizedEmail.length - 1) {
+                return { aliases: [], generatedCount: 0 };
+            }
+
+            const localPart = normalizedEmail.slice(0, atIndex);
+            const domain = normalizedEmail.slice(atIndex + 1);
+            const baseLocalPart = localPart.split('+', 1)[0];
+            if (!baseLocalPart) {
+                return { aliases: [], generatedCount: 0 };
+            }
+
+            const aliases = Array.from(new Set((Array.isArray(existingAliases) ? existingAliases : [])
+                .map(value => String(value || '').trim().toLowerCase())
+                .filter(Boolean)));
+            const seen = new Set(aliases);
+            const requestedCount = Math.max(0, Math.min(50, Number.parseInt(String(count), 10) || 0));
+            let generatedCount = 0;
+            let attempts = 0;
+
+            while (generatedCount < requestedCount && attempts < requestedCount * 20) {
+                attempts += 1;
+                const candidate = `${baseLocalPart}+${buildRandomAliasSuffix()}@${domain}`;
+                if (seen.has(candidate)) {
+                    continue;
+                }
+                seen.add(candidate);
+                aliases.push(candidate);
+                generatedCount += 1;
+            }
+
+            return { aliases, generatedCount };
+        }
+
         function renderEmptyStateMarkup(icon, text, options = {}) {
             const {
                 allowHtml = false,

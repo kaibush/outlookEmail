@@ -1417,6 +1417,65 @@
             }
         }
 
+        async function generateAndSavePlusAliases() {
+            const accountId = document.getElementById('editAccountId')?.value;
+            const email = String(document.getElementById('editEmail')?.value || '').trim().toLowerCase();
+            const countInput = document.getElementById('editAliasGenerateCount');
+            const button = document.getElementById('generatePlusAliasesBtn');
+            const count = Number.parseInt(countInput?.value || '10', 10);
+
+            if (!accountId || !email || !email.includes('@')) {
+                showToast('邮箱地址无效，无法生成别名', 'error');
+                return;
+            }
+            if (!Number.isFinite(count) || count < 1 || count > 50) {
+                showToast('生成数量必须是 1 到 50', 'error');
+                return;
+            }
+
+            const textarea = document.getElementById('editAliases');
+            const existingAliases = String(textarea?.value || '')
+                .split('\n')
+                .map(item => item.trim().toLowerCase())
+                .filter(Boolean);
+            const { aliases, generatedCount } = generatePlusAliasesForEmail(email, existingAliases, count);
+
+            if (!generatedCount) {
+                showToast('未生成新别名，请重试', 'error');
+                return;
+            }
+
+            if (button) {
+                button.disabled = true;
+                button.textContent = '生成并保存中...';
+            }
+
+            try {
+                const response = await fetch(`/api/accounts/${accountId}/aliases`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ aliases })
+                });
+                const result = await response.json();
+                if (!result.success) {
+                    handleApiError(result, '别名保存失败');
+                    return;
+                }
+
+                if (textarea) {
+                    textarea.value = Array.isArray(result.aliases) ? result.aliases.join('\n') : aliases.join('\n');
+                }
+                showToast(`已生成并保存 ${generatedCount} 个 + 别名`, 'success');
+            } catch (error) {
+                showToast('别名保存失败', 'error');
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = '生成 + 别名并保存';
+                }
+            }
+        }
+
         async function updateAccount() {
             const accountId = document.getElementById('editAccountId').value;
             const oldGroupId = currentGroupId;

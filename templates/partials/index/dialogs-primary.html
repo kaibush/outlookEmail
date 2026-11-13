@@ -406,6 +406,11 @@
                                 <textarea class="form-textarea edit-account-note" id="editAliases" placeholder="每行一个别名邮箱，例如&#10;alias1@example.com&#10;alias2@example.com" rows="4"></textarea>
                                 <p id="editManagedAliases" class="form-hint"></p>
                                 <div class="form-hint">支持多个别名。保存后，可直接用别名邮箱调用 API 获取该账号收到的邮件或验证码。</div>
+                                <div class="alias-generate-row">
+                                    <input type="number" class="form-input alias-generate-count" id="editAliasGenerateCount" value="10" min="1" max="50" step="1" aria-label="生成别名数量">
+                                    <button type="button" class="btn btn-secondary" id="generatePlusAliasesBtn" onclick="generateAndSavePlusAliases()">生成 + 别名并保存</button>
+                                </div>
+                                <div class="form-hint">无需卖家提供：生成“主邮箱+随机后缀”的可收信子地址，适用于 Outlook 等支持 + 子地址的邮箱。</div>
                             </div>
                         </div>
                     </details>
