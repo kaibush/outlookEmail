@@ -30,12 +30,21 @@ jobs:
 
       - name: Fetch target branches
         run: |
-          git fetch origin main dev
+          git fetch origin main
+          if git ls-remote --exit-code --heads origin dev >/dev/null; then
+            git fetch origin dev
+          else
+            echo "origin/dev does not exist; it will be created from main"
+          fi
 
       - name: Merge main into dev
         run: |
-          git checkout -B dev origin/dev
-          git merge --no-ff --no-edit origin/main
+          if git show-ref --verify --quiet refs/remotes/origin/dev; then
+            git checkout -B dev origin/dev
+            git merge --no-ff --no-edit origin/main
+          else
+            git checkout -B dev origin/main
+          fi
 
       - name: Push dev branch
         run: |
