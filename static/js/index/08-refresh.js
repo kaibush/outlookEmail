@@ -48,6 +48,13 @@
             return `<span class="refresh-status-pill ${meta.className}">${meta.label}</span>`;
         }
 
+        function getRefreshSuccessMessage(result) {
+            if (result.message) return result.message;
+            if (result.token_rotated === true) return '刷新成功，Token 已更新';
+            if (result.token_rotated === false) return '验证成功，Token 未轮换，继续使用原 Token';
+            return '刷新成功（轮换结果未记录）';
+        }
+
         function closeRefreshEventSource(source = refreshModalState.eventSource) {
             if (!source) {
                 return;
@@ -343,7 +350,6 @@
                     refresh: document.getElementById('refreshSelectedBtn'),
                     enableForwarding: document.getElementById('refreshEnableForwardingBtn'),
                     disableForwarding: document.getElementById('refreshDisableForwardingBtn'),
-                    enableAccounts: document.getElementById('refreshEnableAccountsBtn'),
                     disableAccounts: document.getElementById('refreshDisableAccountsBtn'),
                     proxy: document.getElementById('refreshProxyBtn'),
                     delete: document.getElementById('refreshDeleteSelectedBtn'),
@@ -559,6 +565,7 @@
         }
 
         function syncRefreshBatchControls() {
+            syncAccountStatusBatchControls(getRefreshAccountBatchContext(), refreshModalState.isRunning);
             const selectedIds = getSelectedRefreshAccountIds();
             const visibleIds = getVisibleRefreshAccountIds();
             const visibleSelectedCount = visibleIds.filter(accountId => refreshModalState.selectedAccountIds.has(accountId)).length;
@@ -809,12 +816,20 @@
                 const isSelected = refreshModalState.selectedAccountIds.has(accountId);
                 const canRetry = item.last_refresh_status === 'failed' && !isRunning;
                 const groupText = item.group_name || '默认分组';
-                const refreshTime = item.last_refresh_at ? formatDateTime(item.last_refresh_at) : '-';
+                const [refreshTime, successTime, rotationTime] = [
+                    'last_refresh_at', 'last_refresh_success_at', 'refresh_token_updated_at',
+                ].map(field => item[field] ? formatDateTime(item[field]) : '-');
                 const remarkHtml = item.remark
                     ? `<div class="refresh-account-remark">${escapeHtml(item.remark)}</div>`
                     : '';
                 const errorHtml = item.last_refresh_status === 'failed' && item.last_refresh_error
                     ? `<div class="refresh-account-error">${escapeHtml(item.last_refresh_error)}</div>`
+                    : '';
+                const rotationText = item.last_refresh_token_rotated === true
+                    ? 'Token 已更新'
+                    : item.last_refresh_token_rotated === false ? 'Token 未轮换' : '轮换结果未记录';
+                const rotationHtml = item.last_refresh_status === 'success' && !isRunning
+                    ? `<div class="refresh-account-remark">${rotationText}</div>`
                     : '';
                 const rowClassNames = [
                     isRunning ? 'is-refreshing' : '',
@@ -836,7 +851,9 @@
                         </td>
                         <td class="refresh-account-group" title="${escapeHtml(groupText)}">${escapeHtml(groupText)}</td>
                         <td class="refresh-account-time">${escapeHtml(refreshTime)}</td>
-                        <td class="refresh-account-status-cell">${renderRefreshStatusBadge(item.last_refresh_status, isRunning)}</td>
+                        <td class="refresh-account-time">${escapeHtml(successTime)}</td>
+                        <td class="refresh-account-time">${escapeHtml(rotationTime)}</td>
+                        <td class="refresh-account-status-cell">${renderRefreshStatusBadge(item.last_refresh_status, isRunning)}${rotationHtml}</td>
                         <td class="refresh-account-action">
                             ${canRetry
                                 ? `<button class="btn btn-sm btn-primary" type="button" onclick="retrySingleAccount(${item.id}, '${escapeJs(item.email)}')">重试</button>`
@@ -856,6 +873,8 @@
                             <th>邮箱</th>
                             <th>分组</th>
                             <th>最近刷新</th>
+                            <th>最近成功刷新</th>
+                            <th>最近轮换</th>
                             <th>状态</th>
                             <th>操作</th>
                         </tr>
@@ -1047,7 +1066,12 @@
             }
             targetItem.last_refresh_status = data.status;
             targetItem.last_refresh_error = data.error_message || null;
-            targetItem.last_refresh_at = new Date().toISOString();
+            targetItem.last_refresh_token_rotated = data.token_rotated ?? null;
+            for (const field of ['last_refresh_at', 'last_refresh_success_at', 'refresh_token_updated_at']) {
+                if (Object.prototype.hasOwnProperty.call(data, field)) {
+                    targetItem[field] = data[field];
+                }
+            }
         }
 
         function beginRefreshTaskRuntime(summary, title, detail) {
@@ -1159,7 +1183,7 @@
                         applyRefreshResultToListItem(data);
                         appendRefreshRuntimeLog(
                             data.status === 'failed' ? 'error' : 'success',
-                            `${data.email || '-'} ${data.status === 'failed' ? '刷新失败' : '刷新成功'}`,
+                            `${data.email || '-'} ${data.status === 'failed' ? '刷新失败' : getRefreshSuccessMessage(data)}`,
                             data.error_message || `累计成功 ${successCount}，失败 ${failedCount}`
                         );
                         renderRefreshAccountList(refreshModalState.items, refreshModalState.total);
@@ -1368,11 +1392,8 @@
             return withRefreshAccountBatchContext(() => updateForwardingForSelectedAccounts(false));
         }
 
-        async function enableSelectedRefreshAccounts() {
-            return withRefreshAccountBatchContext(() => updateStatusForSelectedAccounts('active'));
-        }
-
         async function disableSelectedRefreshAccounts() {
+            if (refreshModalState.isRunning) return;
             return withRefreshAccountBatchContext(() => updateStatusForSelectedAccounts('inactive'));
         }
 
@@ -1514,9 +1535,10 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    appendRefreshRuntimeLog('success', `${accountEmail} 刷新成功`, '单账号重试完成');
+                    const successMessage = `${accountEmail} ${getRefreshSuccessMessage(data)}`;
+                    appendRefreshRuntimeLog('success', successMessage, '单账号重试完成');
                     updateRefreshLogSummary(`${accountEmail} 重试完成`);
-                    showToast(`${accountEmail} 刷新成功`, 'success');
+                    showToast(successMessage, 'success');
                     await reloadRefreshWorkbenchData();
                 } else {
                     const errorMessage = data?.error?.message || data?.error || data?.message || '刷新失败';
@@ -1532,6 +1554,10 @@
                 refreshModalState.currentRefreshingAccountId = null;
                 renderRefreshAccountList(refreshModalState.items, refreshModalState.total);
             }
+        }
+
+        function getForwardingChannelLabel(channel) {
+            return channel === 'feishu' ? '飞书' : (channel || '-');
         }
 
         async function loadForwardingLogs() {
@@ -1559,7 +1585,7 @@
                                         <div style="font-size: 12px; color: ${statusColor}; font-weight: 600;">${statusText}</div>
                                     </div>
                                     <div style="font-size: 12px; color: #666; line-height: 1.7;">
-                                        <div>渠道：${escapeHtml(log.channel || '-')}</div>
+                                        <div>渠道：${escapeHtml(getForwardingChannelLabel(log.channel))}</div>
                                         <div>邮件 ID：${escapeHtml(log.message_id || '-')}</div>
                                         <div>时间：${formatDateTime(log.created_at)}</div>
                                     </div>
@@ -1608,7 +1634,7 @@
                                         <div style="font-size: 12px; color: #dc3545; font-weight: 600;">失败</div>
                                     </div>
                                     <div style="font-size: 12px; color: #666; line-height: 1.7;">
-                                        <div>渠道：${escapeHtml(log.channel || '-')}</div>
+                                        <div>渠道：${escapeHtml(getForwardingChannelLabel(log.channel))}</div>
                                         <div>邮件 ID：${escapeHtml(log.message_id || '-')}</div>
                                         <div>时间：${formatDateTime(log.created_at)}</div>
                                     </div>

@@ -46,6 +46,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from outlook_web.runtime import default_database_path, resource_path, resolve_secret_key, runtime_root
 from outlook_web.mail_datetime import parse_mail_datetime
+import outlook_web.forwarding_store as forwarding_store
 
 # 尝试导入 Flask-WTF CSRF 保护
 try:
@@ -581,6 +582,9 @@ IMAP_IDENTITY_FIELDS = {
 }
 
 MAIL_PROVIDERS = {
+    "icloud": {
+        "label": "iCloud", "imap_host": "imap.mail.me.com", "imap_port": 993, "account_type": "imap",
+    },
     "outlook": {
         "label": "Outlook",
         "imap_host": IMAP_SERVER_NEW,
@@ -638,6 +642,7 @@ MAIL_PROVIDERS = {
 }
 
 DOMAIN_PROVIDER_MAP = {
+    "icloud.com": "icloud", "me.com": "icloud", "mac.com": "icloud",
     "outlook.com": "outlook",
     "hotmail.com": "outlook",
     "live.com": "outlook",
@@ -703,9 +708,11 @@ IMAP_FOLDER_MATCH_ALIASES = {
 FORWARD_CHANNEL_EMAIL = "email"
 FORWARD_CHANNEL_TELEGRAM = "telegram"
 FORWARD_CHANNEL_WECOM = "wecom"
+FORWARD_CHANNEL_FEISHU = "feishu"
 FORWARD_CHANNEL_SMTP_SETTING = "smtp"
 FORWARD_CHANNEL_TG_SETTING = "telegram"
 FORWARD_CHANNEL_WECOM_SETTING = "wecom"
+FORWARD_CHANNEL_FEISHU_SETTING = "feishu"
 SMTP_FORWARD_PROVIDERS = ('outlook', 'qq', '163', '126', 'yahoo', 'aliyun', 'custom')
 
 # 数据库文件
@@ -726,6 +733,7 @@ SKIN_BLOCKED_EXTRA_EXTENSIONS = {
     '.js', '.mjs', '.cjs', '.sh', '.bash', '.zsh', '.py',
     '.html', '.htm', '.exe', '.bat', '.cmd', '.ps1',
 }
+DOMPURIFY_JS_FILE = 'vendor/dompurify/purify.min.js'
 INDEX_CSS_FILES = (
     'css/index/01-base.css',
     'css/index/02-navbar.css',
@@ -735,6 +743,10 @@ INDEX_CSS_FILES = (
     'css/index/06-modals-toast.css',
     'css/index/07-meta.css',
     'css/index/08-responsive.css',
+    'css/index/09-icloud.css',
+    'css/index/forwarding/tokens.css',
+    'css/index/forwarding/base.css',
+    'css/index/10-forwarding.css',
 )
 INDEX_JS_FILES = (
     'js/index/01-core.js',
@@ -749,6 +761,9 @@ INDEX_JS_FILES = (
     'js/index/10-batch-actions.js',
     'js/index/11-email-shares.js',
     'js/index/12-outlook-upload-accounts.js',
+    'js/index/13-projects.js',
+    'js/index/14-icloud.js',
+    'js/index/15-forwarding.js',
 )
 
 # GPTMail API 配置
@@ -1361,6 +1376,7 @@ def init_db():
             account_type TEXT DEFAULT 'outlook',
             provider TEXT DEFAULT 'outlook',
             authorization_type TEXT NOT NULL DEFAULT '',
+            graph_token_scope TEXT NOT NULL DEFAULT '',
             imap_host TEXT,
             imap_port INTEGER DEFAULT 993,
             imap_password TEXT,
@@ -1370,8 +1386,10 @@ def init_db():
             fallback_proxy_url_1 TEXT DEFAULT '',
             fallback_proxy_url_2 TEXT DEFAULT '',
             last_refresh_at TIMESTAMP,
+            last_refresh_success_at TIMESTAMP,
             last_refresh_status TEXT DEFAULT 'never',
             last_refresh_error TEXT,
+            last_refresh_token_rotated INTEGER,
             refresh_token_updated_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1506,10 +1524,16 @@ def init_db():
             refresh_type TEXT DEFAULT 'manual',
             status TEXT NOT NULL,
             error_message TEXT,
+            token_rotated INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
         )
     ''')
+
+    cursor.execute('PRAGMA table_info(account_refresh_logs)')
+    refresh_log_columns = [column[1] for column in cursor.fetchall()]
+    if 'token_rotated' not in refresh_log_columns:
+        cursor.execute('ALTER TABLE account_refresh_logs ADD COLUMN token_rotated INTEGER')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS token_refresh_state (
@@ -1589,6 +1613,7 @@ def init_db():
             account_id INTEGER NOT NULL,
             token_hash TEXT UNIQUE NOT NULL,
             token_encrypted TEXT NOT NULL,
+            access_code_hash TEXT,
             expires_at TIMESTAMP,
             never_expires INTEGER NOT NULL DEFAULT 0,
             max_email_count INTEGER CHECK (
@@ -1613,6 +1638,8 @@ def init_db():
     email_share_columns = [col[1] for col in cursor.fetchall()]
     if 'max_email_count' not in email_share_columns:
         cursor.execute('ALTER TABLE email_share_links ADD COLUMN max_email_count INTEGER')
+    if 'access_code_hash' not in email_share_columns:
+        cursor.execute('ALTER TABLE email_share_links ADD COLUMN access_code_hash TEXT')
 
     # 创建审计日志表
     cursor.execute('''
@@ -1821,6 +1848,24 @@ def init_db():
         cursor.execute("ALTER TABLE accounts ADD COLUMN last_refresh_status TEXT DEFAULT 'never'")
     if 'last_refresh_error' not in columns:
         cursor.execute('ALTER TABLE accounts ADD COLUMN last_refresh_error TEXT')
+    if 'last_refresh_token_rotated' not in columns:
+        cursor.execute('ALTER TABLE accounts ADD COLUMN last_refresh_token_rotated INTEGER')
+    if 'last_refresh_success_at' not in columns:
+        cursor.execute('ALTER TABLE accounts ADD COLUMN last_refresh_success_at TIMESTAMP')
+        cursor.execute('''
+            UPDATE accounts
+            SET last_refresh_success_at = (
+                SELECT MAX(l.created_at)
+                FROM account_refresh_logs l
+                WHERE l.account_id = accounts.id AND l.status = 'success'
+            )
+        ''')
+        cursor.execute('''
+            UPDATE accounts
+            SET last_refresh_success_at = last_refresh_at
+            WHERE last_refresh_status = 'success' AND last_refresh_at IS NOT NULL
+              AND (last_refresh_success_at IS NULL OR last_refresh_at > last_refresh_success_at)
+        ''')
     if 'refresh_token_updated_at' not in columns:
         cursor.execute('ALTER TABLE accounts ADD COLUMN refresh_token_updated_at TIMESTAMP')
     if 'account_type' not in columns:
@@ -1829,6 +1874,8 @@ def init_db():
         cursor.execute("ALTER TABLE accounts ADD COLUMN provider TEXT DEFAULT 'outlook'")
     if 'authorization_type' not in columns:
         cursor.execute("ALTER TABLE accounts ADD COLUMN authorization_type TEXT NOT NULL DEFAULT ''")
+    if 'graph_token_scope' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN graph_token_scope TEXT NOT NULL DEFAULT ''")
     if 'imap_host' not in columns:
         cursor.execute('ALTER TABLE accounts ADD COLUMN imap_host TEXT')
     if 'imap_port' not in columns:
@@ -1892,6 +1939,17 @@ def init_db():
     retained_normal_mail_columns = {row[1] for row in cursor.fetchall()}
     if 'received_at_sort' not in retained_normal_mail_columns:
         cursor.execute('ALTER TABLE retained_normal_mail_messages ADD COLUMN received_at_sort REAL DEFAULT 0')
+
+    if not cursor.execute("SELECT 1 FROM settings WHERE key = 'imap_uid_identity_cache_migrated'").fetchone():
+        # 旧 IMAP 缓存可能已错配：失效后重新同步，保留原始正文记录供恢复。
+        cursor.execute('''
+            UPDATE retained_normal_mail_messages
+            SET list_cached = 0, body_cached = 0, body_preview = ''
+            WHERE id_mode = 'sequence'
+               OR (id_mode = 'uid' AND provider_message_id NOT LIKE 'imap:%')
+               OR (id_mode = '' AND account_id IN (SELECT id FROM accounts WHERE account_type = 'imap'))
+        ''')
+        cursor.execute("INSERT INTO settings (key, value) VALUES ('imap_uid_identity_cache_migrated', '1')")
 
     cursor.execute("PRAGMA table_info(project_accounts)")
     project_account_columns = [col[1] for col in cursor.fetchall()]
@@ -2260,6 +2318,14 @@ def init_db():
     ''')
     cursor.execute('''
         INSERT OR IGNORE INTO settings (key, value)
+        VALUES ('feishu_webhook_url', '')
+    ''')
+    cursor.execute('''
+        INSERT OR IGNORE INTO settings (key, value)
+        VALUES ('feishu_sign_secret', '')
+    ''')
+    cursor.execute('''
+        INSERT OR IGNORE INTO settings (key, value)
         VALUES ('webdav_backup_enabled', 'false')
     ''')
     cursor.execute('''
@@ -2485,6 +2551,16 @@ def init_db():
 
     # 迁移现有明文数据为加密数据
     migrate_sensitive_data(conn)
+
+    from outlook_web.icloud_store import init_icloud_schema
+    init_icloud_schema(conn)
+
+    try:
+        forwarding_store.init_schema(conn, encrypt_data, decrypt_data)
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
 
     conn.commit()
     conn.close()
@@ -2771,6 +2847,10 @@ def compute_static_assets_hash(relative_paths) -> str:
 
 def get_frontend_asset_hash() -> str:
     return compute_static_assets_hash(INDEX_CSS_FILES + INDEX_JS_FILES)
+
+
+def get_dompurify_asset_hash() -> str:
+    return compute_static_assets_hash((DOMPURIFY_JS_FILE,))
 
 
 def get_builtin_editorial_skin_css_path() -> Path:
@@ -3490,6 +3570,15 @@ def get_gptmail_api_key() -> str:
 def get_external_api_key() -> str:
     """获取对外 API Key（从数据库读取，明文存储）"""
     return get_setting('external_api_key', '')
+
+
+EXTERNAL_API_KEY_PERMISSIONS = ('readonly', 'readwrite')
+
+
+def get_external_api_key_permission() -> str:
+    """获取对外 API Key 权限级别（非法值与未配置均按只读兜底）"""
+    permission = str(get_setting('external_api_key_permission', 'readonly') or '').strip().lower()
+    return permission if permission in EXTERNAL_API_KEY_PERMISSIONS else 'readonly'
 
 
 def get_duckmail_base_url() -> str:

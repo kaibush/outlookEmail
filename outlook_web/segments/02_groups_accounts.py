@@ -816,6 +816,24 @@ def normalize_account_status(status: Any) -> str:
     return 'active'
 
 
+def normalize_graph_token_scope(scope: Any) -> str:
+    """归一化账号级 Graph Token scope；空值表示自动（依次回退并记住成功项）。"""
+    normalized = ' '.join(str(scope or '').split())
+    if normalized.lower() in {'auto', 'recommended', '自动'}:
+        return ''
+    return normalized
+
+
+def register_account_graph_token_scope_preference(account: Dict[str, Any]) -> None:
+    """为已解密的账号登记 scope，供页面请求和后台转发共用。"""
+    account['graph_token_scope'] = normalize_graph_token_scope(account.get('graph_token_scope'))
+    register_graph_token_scope_preference(
+        account.get('client_id', ''),
+        account.get('refresh_token', ''),
+        account['graph_token_scope'],
+    )
+
+
 # ==================== 标签管理 ====================
 
 def get_tags() -> List[Dict]:
@@ -971,6 +989,10 @@ def validate_account_aliases(account_id: int, primary_email: str, aliases: List[
         if normalized == primary_normalized:
             errors.append(f'别名 {normalized} 不能与主邮箱相同')
             continue
+        if (get_db().execute('SELECT 1 FROM icloud_hme_aliases WHERE address=?', (normalized,)).fetchone()
+                and not get_db().execute('SELECT 1 FROM account_aliases WHERE account_id=? AND LOWER(alias_email)=? AND icloud_alias_id IS NULL', (account_id, normalized)).fetchone()):
+            errors.append(f'别名 {normalized} 由 iCloud 管理，请前往 iCloud 管理修改')
+            continue
         if email_exists_as_primary(normalized, exclude_account_id=account_id):
             errors.append(f'别名 {normalized} 已被其他主邮箱占用')
             continue
@@ -988,12 +1010,15 @@ def validate_account_aliases(account_id: int, primary_email: str, aliases: List[
 
 def replace_account_aliases(account_id: int, primary_email: str, aliases: List[str], db=None) -> tuple[bool, List[str], List[str]]:
     database = db or get_db()
+    managed = {row[0].lower() for row in database.execute(
+        'SELECT alias_email FROM account_aliases WHERE account_id=? AND icloud_alias_id IS NOT NULL', (account_id,))}
+    aliases = [alias for alias in aliases if normalize_email_address(alias) not in managed]
     cleaned_aliases, errors = validate_account_aliases(account_id, primary_email, aliases)
     if errors:
         return False, cleaned_aliases, errors
 
     try:
-        database.execute('DELETE FROM account_aliases WHERE account_id = ?', (account_id,))
+        database.execute('DELETE FROM account_aliases WHERE account_id = ? AND icloud_alias_id IS NULL', (account_id,))
         for alias_email in cleaned_aliases:
             database.execute(
                 '''
@@ -1026,6 +1051,7 @@ def resolve_account_record(row: sqlite3.Row, matched_alias: str = '',
         except Exception:
             pass
     account['provider'] = normalize_provider(account.get('provider'), account.get('email', ''))
+    register_account_graph_token_scope_preference(account)
     account['account_type'] = account.get('account_type') or get_provider_meta(
         account['provider'], account.get('email', '')
     ).get('account_type', 'outlook')
@@ -1094,19 +1120,20 @@ def resolve_account_by_address(email_addr: str) -> Optional[Dict]:
     if row:
         return resolve_account_record(row)
 
-    alias_row = db.execute(
-        '''
-        SELECT a.*, aa.alias_email AS matched_alias
-        FROM account_aliases aa
-        JOIN accounts a ON a.id = aa.account_id
-        WHERE LOWER(aa.alias_email) = ?
-        LIMIT 1
-        ''',
-        (normalized,)
-    ).fetchone()
-    if not alias_row:
-        return None
-    return resolve_account_record(alias_row, matched_alias=alias_row['matched_alias'])
+    manual_alias = db.execute('''SELECT a.*, aa.alias_email AS matched_alias FROM account_aliases aa
+        JOIN accounts a ON a.id=aa.account_id WHERE LOWER(aa.alias_email)=? AND aa.icloud_alias_id IS NULL LIMIT 1''', (normalized,)).fetchone()
+    if manual_alias:
+        return resolve_account_record(manual_alias, matched_alias=manual_alias['matched_alias'])
+
+    from outlook_web.icloud_store import ICloudStore
+    context = ICloudStore(db, get_cipher()).resolve(normalized)
+    if context:
+        row = db.execute('SELECT * FROM accounts WHERE id=?', (context['mailbox_account_id'],)).fetchone()
+        account = resolve_account_record(row, matched_alias=normalized)
+        account.update(context)
+        return account
+
+    return None
 
 
 def build_plus_fallback_emails(email_addr: str) -> List[str]:
@@ -1412,11 +1439,18 @@ def serialize_account_summary(account: Dict[str, Any], last_refresh_log: Optiona
         'account_type': account.get('account_type', 'outlook'),
         'provider': account.get('provider', 'outlook'),
         'authorization_type': get_account_authorization_type(account),
+        'graph_token_scope': normalize_graph_token_scope(account.get('graph_token_scope')),
         'forward_enabled': bool(account.get('forward_enabled')),
         'proxy_override_enabled': account_has_proxy_override(account),
         'last_refresh_at': refresh_state['last_refresh_at'],
+        'last_refresh_success_at': account.get('last_refresh_success_at'),
+        'refresh_token_updated_at': account.get('refresh_token_updated_at'),
         'last_refresh_status': refresh_state['last_refresh_status'],
         'last_refresh_error': refresh_state['last_refresh_error'],
+        'last_refresh_token_rotated': (
+            bool(account['last_refresh_token_rotated'])
+            if account.get('last_refresh_token_rotated') is not None else None
+        ),
         'created_at': account.get('created_at', ''),
         'updated_at': account.get('updated_at', ''),
         'tags': account.get('tags', [])
@@ -1434,10 +1468,10 @@ def serialize_account_summary(account: Dict[str, Any], last_refresh_log: Optiona
 ACCOUNT_INSERT_SQL = '''
     INSERT OR IGNORE INTO accounts (
         email, password, client_id, refresh_token, group_id, sort_order, remark,
-        status, account_type, provider, imap_host, imap_port, imap_password, forward_enabled,
+        status, account_type, provider, graph_token_scope, imap_host, imap_port, imap_password, forward_enabled,
         forward_last_checked_at, proxy_url, fallback_proxy_url_1, fallback_proxy_url_2
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 '''
 
 
@@ -1447,7 +1481,7 @@ def build_account_insert_values(email_addr: str, password: str, client_id: str =
                                 imap_password: str = '', forward_enabled: bool = False,
                                 sort_order: Optional[int] = None, status: str = 'active',
                                 proxy_url: str = '', fallback_proxy_url_1: str = '',
-                                fallback_proxy_url_2: str = '') -> tuple:
+                                fallback_proxy_url_2: str = '', graph_token_scope: str = '') -> tuple:
     encrypted_password = encrypt_data(password) if password else password
     encrypted_refresh_token = encrypt_data(refresh_token) if refresh_token else refresh_token
     encrypted_imap_password = encrypt_data(imap_password) if imap_password else imap_password
@@ -1470,11 +1504,12 @@ def build_account_insert_values(email_addr: str, password: str, client_id: str =
         normalized_status,
         normalized_account_type,
         normalized_provider,
+        normalize_graph_token_scope(graph_token_scope),
         normalized_imap_host,
         normalized_imap_port,
         encrypted_imap_password,
         1 if forward_enabled else 0,
-        datetime.now(timezone.utc).isoformat() if forward_enabled else None,
+        datetime.now(timezone.utc).isoformat(),
         str(proxy_url or '').strip(),
         str(fallback_proxy_url_1 or '').strip(),
         str(fallback_proxy_url_2 or '').strip(),
@@ -1487,7 +1522,7 @@ def add_account(email_addr: str, password: str, client_id: str = '', refresh_tok
                 imap_password: str = '', forward_enabled: bool = False,
                 sort_order: Optional[int] = None, status: str = 'active',
                 proxy_url: str = '', fallback_proxy_url_1: str = '',
-                fallback_proxy_url_2: str = '') -> bool:
+                fallback_proxy_url_2: str = '', graph_token_scope: str = '') -> bool:
     """添加邮箱账号"""
     db = get_db()
     try:
@@ -1496,7 +1531,7 @@ def add_account(email_addr: str, password: str, client_id: str = '', refresh_tok
             email_addr, password, client_id, refresh_token, group_id, remark,
             account_type, provider, imap_host, imap_port, imap_password,
             forward_enabled, sort_order, status,
-            proxy_url, fallback_proxy_url_1, fallback_proxy_url_2
+            proxy_url, fallback_proxy_url_1, fallback_proxy_url_2, graph_token_scope
         ))
         db.commit()
         return db.total_changes > before_changes
@@ -1509,7 +1544,7 @@ def add_accounts_bulk(parsed_accounts: List[Dict[str, Any]], group_id: int = 1,
                       sort_order: Optional[int] = None, remark: str = '',
                       status: str = 'active', tag_ids: Optional[List[int]] = None,
                       proxy_url: str = '', fallback_proxy_url_1: str = '',
-                      fallback_proxy_url_2: str = '') -> Dict[str, int]:
+                      fallback_proxy_url_2: str = '', graph_token_scope: str = '') -> Dict[str, int]:
     """批量添加邮箱账号，单事务写入，重复邮箱自动跳过。"""
     if not parsed_accounts:
         return {'added_count': 0, 'skipped_count': 0}
@@ -1543,7 +1578,8 @@ def add_accounts_bulk(parsed_accounts: List[Dict[str, Any]], group_id: int = 1,
             normalized_status,
             proxy_url,
             fallback_proxy_url_1,
-            fallback_proxy_url_2
+            fallback_proxy_url_2,
+            graph_token_scope
         )
         for parsed in parsed_accounts
     ]
@@ -2069,7 +2105,8 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
                    imap_host: str = '', imap_port: int = 993, imap_password: str = '',
                    forward_enabled: bool = False, proxy_url: str = '',
                    fallback_proxy_url_1: str = '', fallback_proxy_url_2: str = '',
-                   authorization_type: Optional[str] = None) -> bool:
+                   authorization_type: Optional[str] = None,
+                   graph_token_scope: Optional[str] = None) -> bool:
     """更新邮箱账号"""
     db = get_db()
     try:
@@ -2081,6 +2118,9 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
         normalized_proxy_url = str(proxy_url or '').strip()
         normalized_fallback_proxy_url_1 = str(fallback_proxy_url_1 or '').strip()
         normalized_fallback_proxy_url_2 = str(fallback_proxy_url_2 or '').strip()
+        normalized_graph_token_scope = (
+            None if graph_token_scope is None else normalize_graph_token_scope(graph_token_scope)
+        )
 
         current_account = db.execute(
             'SELECT forward_enabled, forward_last_checked_at, account_type, authorization_type FROM accounts WHERE id = ?',
@@ -2103,6 +2143,7 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
                 SET email = ?, password = ?, client_id = ?, refresh_token = ?,
                     group_id = ?, sort_order = ?, remark = ?, status = ?, account_type = ?, provider = ?,
                     authorization_type = ?,
+                    graph_token_scope = COALESCE(?, graph_token_scope),
                     imap_host = ?, imap_port = ?, imap_password = ?, forward_enabled = ?,
                     forward_last_checked_at = ?, proxy_url = ?, fallback_proxy_url_1 = ?,
                     fallback_proxy_url_2 = ?, updated_at = CURRENT_TIMESTAMP
@@ -2110,7 +2151,8 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
             ''', (
                 email_addr, encrypted_password, client_id, encrypted_refresh_token, group_id, normalized_sort_order,
                 remark, status,
-                account_type, provider, effective_authorization_type, imap_host, imap_port, encrypted_imap_password, 1,
+                account_type, provider, effective_authorization_type, normalized_graph_token_scope,
+                imap_host, imap_port, encrypted_imap_password, 1,
                 datetime.now(timezone.utc).isoformat(), normalized_proxy_url,
                 normalized_fallback_proxy_url_1, normalized_fallback_proxy_url_2, account_id
             ))
@@ -2120,6 +2162,7 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
                 SET email = ?, password = ?, client_id = ?, refresh_token = ?,
                     group_id = ?, sort_order = ?, remark = ?, status = ?, account_type = ?, provider = ?,
                     authorization_type = ?,
+                    graph_token_scope = COALESCE(?, graph_token_scope),
                     imap_host = ?, imap_port = ?, imap_password = ?, forward_enabled = ?,
                     proxy_url = ?, fallback_proxy_url_1 = ?, fallback_proxy_url_2 = ?,
                     updated_at = CURRENT_TIMESTAMP
@@ -2127,10 +2170,13 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
             ''', (
                 email_addr, encrypted_password, client_id, encrypted_refresh_token, group_id, normalized_sort_order,
                 remark, status,
-                account_type, provider, effective_authorization_type, imap_host, imap_port, encrypted_imap_password, 1 if forward_enabled else 0,
+                account_type, provider, effective_authorization_type, normalized_graph_token_scope,
+                imap_host, imap_port, encrypted_imap_password, 1 if forward_enabled else 0,
                 normalized_proxy_url, normalized_fallback_proxy_url_1, normalized_fallback_proxy_url_2, account_id
             ))
         db.commit()
+        if normalized_graph_token_scope is not None:
+            register_graph_token_scope_preference(client_id, refresh_token, normalized_graph_token_scope)
         return True
     except Exception:
         return False
@@ -2138,6 +2184,7 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
 
 PROJECT_ACCOUNT_STATUSES = {'toClaim', 'claiming', 'done', 'failed', 'removed', 'deleted'}
 PROJECT_RESTORABLE_STATUSES = {'toClaim', 'done', 'failed', 'removed'}
+PROJECT_STATUSES = {'active', 'archived'}
 
 
 def project_now_iso() -> str:
@@ -2307,6 +2354,77 @@ def load_projects() -> List[Dict[str, Any]]:
         '''
     ).fetchall()
     return [serialize_project_row(row, db=db) for row in rows]
+
+
+def set_project_status(project_key: str, status: str) -> Optional[Dict[str, Any]]:
+    """停用（archived）或恢复（active）项目；项目不存在返回 None。"""
+    normalized_key = normalize_project_key(project_key)
+    if not normalized_key:
+        raise ValueError('project_key 不能为空')
+    normalized_status = str(status or '').strip().lower()
+    if normalized_status not in PROJECT_STATUSES:
+        raise ValueError('status 仅支持 active / archived')
+
+    db = get_db()
+    now_str = project_now_iso()
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute(
+            'SELECT id FROM projects WHERE project_key = ? LIMIT 1',
+            (normalized_key,)
+        ).fetchone()
+        if not row:
+            db.rollback()
+            return None
+        db.execute(
+            'UPDATE projects SET status = ?, updated_at = ? WHERE id = ?',
+            (normalized_status, now_str, row['id'])
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return get_project_by_key(normalized_key)
+
+
+def delete_project(project_key: str) -> Optional[Dict[str, Any]]:
+    """删除项目及其邮箱池关联；正在领取中的邮箱会阻止删除。返回删除前的项目摘要。"""
+    normalized_key = normalize_project_key(project_key)
+    if not normalized_key:
+        raise ValueError('project_key 不能为空')
+
+    db = get_db()
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute(
+            'SELECT id FROM projects WHERE project_key = ? LIMIT 1',
+            (normalized_key,)
+        ).fetchone()
+        if not row:
+            db.rollback()
+            return None
+        project_id = int(row['id'])
+
+        claiming_count = int(
+            db.execute(
+                "SELECT COUNT(*) AS count FROM project_accounts WHERE project_id = ? AND status = 'claiming'",
+                (project_id,)
+            ).fetchone()['count']
+        )
+        if claiming_count:
+            db.rollback()
+            raise ValueError(f'有 {claiming_count} 个邮箱正在领取中，请先完成或释放后再删除项目')
+
+        summary = get_project_by_key(normalized_key, db=db)
+        db.execute('DELETE FROM project_account_events WHERE project_id = ?', (project_id,))
+        db.execute('DELETE FROM project_accounts WHERE project_id = ?', (project_id,))
+        db.execute('DELETE FROM project_group_scopes WHERE project_id = ?', (project_id,))
+        db.execute('DELETE FROM projects WHERE id = ?', (project_id,))
+        db.commit()
+        return summary
+    except Exception:
+        db.rollback()
+        raise
 
 
 def get_project_scope_accounts(project_id: int, db=None) -> List[sqlite3.Row]:
@@ -2591,7 +2709,6 @@ def start_project(
                     description = ?,
                     scope_mode = ?,
                     use_alias_email = ?,
-                    status = 'active',
                     last_scope_synced_at = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -2700,9 +2817,12 @@ def claim_project_account(project_key: str, caller_id: str, task_id: str, lease_
             'SELECT * FROM projects WHERE project_key = ? LIMIT 1',
             (normalized_key,)
         ).fetchone()
-        if not project or project['status'] != 'active':
+        if not project:
             db.rollback()
-            return None
+            raise ValueError('项目不存在')
+        if project['status'] != 'active':
+            db.rollback()
+            raise ValueError('项目已停用（archived），无法领取项目邮箱')
 
         row = db.execute(
             '''
@@ -2726,6 +2846,14 @@ def claim_project_account(project_key: str, caller_id: str, task_id: str, lease_
             WHERE pa.project_id = ?
               AND pa.status = 'toClaim'
               AND a.status = 'active'
+              AND (NOT EXISTS (SELECT 1 FROM icloud_hme_aliases h WHERE h.address=pa.normalized_email)
+                   OR LOWER(a.email)=pa.normalized_email
+                   OR EXISTS (SELECT 1 FROM account_aliases aa WHERE aa.account_id=pa.account_id
+                        AND LOWER(aa.alias_email)=pa.normalized_email AND aa.icloud_alias_id IS NULL)
+                   OR EXISTS (SELECT 1 FROM icloud_hme_aliases h JOIN account_aliases aa ON aa.icloud_alias_id=h.id
+                        JOIN icloud_accounts ia ON ia.id=h.account_id WHERE h.address=pa.normalized_email
+                          AND aa.account_id=pa.account_id AND h.state='active' AND h.conflict=''
+                          AND ia.enabled=1 AND ia.binding_lost=0))
               AND NOT EXISTS (
                     SELECT 1 FROM project_accounts pa2
                     WHERE pa2.account_id = pa.account_id
@@ -3309,6 +3437,49 @@ def delete_accounts_by_ids(account_ids: List[int]) -> Dict[str, Any]:
         return {'success': False, 'error': str(e)}
 
 
+def update_accounts_status_by_ids(account_ids: List[int], status: str) -> Dict[str, Any]:
+    """批量启用或停用账号，保留凭据和项目状态。"""
+    if status not in ('active', 'inactive'):
+        return {'success': False, 'error': '账号状态仅支持 active 或 inactive'}
+    if not isinstance(account_ids, list):
+        return {'success': False, 'error': 'account_ids 必须为账号 ID 列表'}
+    normalized_ids = normalize_account_ids(account_ids)
+    if not normalized_ids:
+        return {'success': False, 'error': '请选择要修改的账号'}
+
+    db = get_db()
+    placeholders = ','.join('?' * len(normalized_ids))
+    rows = db.execute(
+        f'SELECT id, email, status FROM accounts WHERE id IN ({placeholders}) ORDER BY id',
+        normalized_ids,
+    ).fetchall()
+    if not rows:
+        return {'success': False, 'error': '未找到可修改的账号'}
+
+    existing_ids = {row['id'] for row in rows}
+    updated_rows = [row for row in rows if row['status'] != status]
+    updated_ids = [row['id'] for row in updated_rows]
+    try:
+        if updated_ids:
+            update_placeholders = ','.join('?' * len(updated_ids))
+            db.execute(
+                f'''UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({update_placeholders})''',
+                [status] + updated_ids,
+            )
+            db.commit()
+        return {
+            'success': True,
+            'updated_count': len(updated_ids),
+            'updated_accounts': [{'id': row['id'], 'email': row['email']} for row in updated_rows],
+            'unchanged_count': len(rows) - len(updated_rows),
+            'missing_ids': [account_id for account_id in normalized_ids if account_id not in existing_ids],
+        }
+    except Exception as e:
+        db.rollback()
+        return {'success': False, 'error': str(e)}
+
+
 def update_accounts_forwarding_by_ids(account_ids: List[int], forward_enabled: bool) -> Dict[str, Any]:
     """批量更新账号转发开关。"""
     db = get_db()
@@ -3524,6 +3695,7 @@ def set_account_forward_cursor(account_id: int, cursor_value: Optional[str]) -> 
             ''',
             (cursor_value, account_id)
         )
+        db.execute('INSERT INTO forwarding_replay_requests(account_id,requested_at) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET requested_at=excluded.requested_at', (account_id, time.time()))
         db.commit()
         return True
     except Exception:

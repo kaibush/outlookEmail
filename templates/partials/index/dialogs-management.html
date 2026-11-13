@@ -42,12 +42,6 @@
                                     </button>
                                 </li>
                                 <li>
-                                    <button type="button" class="settings-sidebar-link" data-target="forwardingSettingsSection" onclick="scrollSettingsSection('forwardingSettingsSection', this)">
-                                        <strong>邮件转发</strong>
-                                        <span>SMTP、Telegram 渠道及历史记录</span>
-                                    </button>
-                                </li>
-                                <li>
                                     <button type="button" class="settings-sidebar-link" data-target="settingsCloudflareSection" onclick="scrollSettingsSection('settingsCloudflareSection', this)">
                                         <strong>Cloudflare 临时邮箱</strong>
                                         <span>Worker 域名、邮箱域名列表和管理员密码</span>
@@ -96,6 +90,14 @@
                                     <div class="form-hint">如果要求对接的功能比较完整，建议直接对接 <a class="inline-link" href="https://github.com/assast/outlookEmail/blob/main/docs/api.md" target="_blank">完整 API</a>；文档已经整理成适合 AI 读取的形状，直接喂给 AI，让 AI 按完整 API 使用登录密码而不是 API Key 对接即可。</div>
                                     <div class="settings-note"><code>GET /api/external/emails?email=xxx&folder=inbox</code></div>
                                 </div>
+                                <div class="form-group settings-form-span-full">
+                                    <label class="form-label" for="settingsExternalApiKeyPermission">对外 API Key 权限</label>
+                                    <select class="form-select" id="settingsExternalApiKeyPermission">
+                                        <option value="readonly">只读（readonly）</option>
+                                        <option value="readwrite">读写（readwrite）</option>
+                                    </select>
+                                    <div class="form-hint">只读保持现有对外查询与上传暂存能力；读写额外开放正式账号的导入与删除端点。</div>
+                                </div>
                                 <div class="form-group">
                                     <label class="form-label" for="settingsAppTimezone">时区</label>
                                     <select class="form-select" id="settingsAppTimezone"></select>
@@ -129,6 +131,13 @@
                                         <span class="form-label">展示组ID</span>
                                     </label>
                                     <div class="form-hint">关闭后，不再展示分组 ID 徽标。</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="settings-toggle settings-toggle--card">
+                                        <input type="checkbox" id="settingsShowProjectManagement">
+                                        <span class="form-label">项目管理入口</span>
+                                    </label>
+                                    <div class="form-hint">开启后，顶部导航显示「项目管理」入口，可在网页上创建项目、查看各状态计数、停用/恢复与删除项目；默认关闭。</div>
                                 </div>
                             </div>
                         </section>
@@ -370,251 +379,6 @@
                     </div>
                 </section>
 
-                <section class="settings-section" id="forwardingSettingsSection">
-                    <div class="settings-section-head">
-                        <span class="settings-section-kicker">Forwarding</span>
-                        <h4>邮件转发设置</h4>
-                        <p>这里配置全局转发渠道；实际是否参与转发，仍以每个账号单独开启的状态为准。</p>
-                    </div>
-                    <div class="settings-panel settings-panel-stack forwarding-console">
-                        <div class="forwarding-toolbar">
-                            <div class="forwarding-toolbar__controls">
-                                <div class="forwarding-inline-control">
-                                    <label class="form-label">轮询间隔</label>
-                                    <div class="input-inline">
-                                        <input type="number" class="form-input" id="forwardCheckIntervalSeconds" min="20" max="3600" value="300">
-                                        <span>秒</span>
-                                    </div>
-                                    <div class="form-hint">系统会按该频率扫描已开启转发的邮箱。</div>
-                                </div>
-                                <div class="forwarding-inline-control">
-                                    <label class="form-label">执行模式</label>
-                                    <select class="form-select" id="forwardExecutionMode" onchange="syncForwardExecutionModeUI()">
-                                        <option value="serial">串行</option>
-                                        <option value="parallel">并行</option>
-                                    </select>
-                                    <div class="form-hint">并行会同时扫描多个账号，默认串行更保守。</div>
-                                </div>
-                                <div class="forwarding-inline-control">
-                                    <label class="form-label">并行 worker</label>
-                                    <div class="input-inline">
-                                        <input type="number" class="form-input" id="forwardParallelWorkers" min="1" max="10" value="4">
-                                        <span>个</span>
-                                    </div>
-                                    <div class="form-hint">仅并行模式生效。</div>
-                                </div>
-                                <div class="forwarding-inline-control">
-                                    <label class="form-label">账号间隔</label>
-                                    <div class="input-inline">
-                                        <input type="number" class="form-input" id="forwardAccountDelaySeconds" min="0" max="60" value="0">
-                                        <span>秒</span>
-                                    </div>
-                                    <div class="form-hint">`0` 表示账号之间不额外等待。</div>
-                                </div>
-                                <div class="forwarding-inline-control">
-                                    <label class="form-label">时间窗口</label>
-                                    <div class="input-inline">
-                                        <input type="number" class="form-input" id="forwardEmailWindowMinutes" min="0" max="10080" value="0">
-                                        <span>分钟</span>
-                                    </div>
-                                    <div class="form-hint">`0` 表示不限制最近邮件范围。</div>
-                                </div>
-                                <div class="forwarding-inline-control forwarding-inline-control--toggle">
-                                    <label class="settings-toggle settings-toggle--inline forwarding-inline-toggle">
-                                        <input type="checkbox" id="forwardIncludeJunkemail">
-                                        <span class="form-label">转发垃圾箱邮件</span>
-                                    </label>
-                                    <div class="form-hint">开启后，垃圾箱的新邮件也会进入轮询。</div>
-                                </div>
-                            </div>
-                            <div class="settings-action-row settings-action-row--toolbar">
-                                <button class="btn btn-primary" type="button" id="triggerForwardingCheckBtn" onclick="triggerForwardingCheck()">手动触发转发检查</button>
-                            </div>
-                        </div>
-                        <div class="form-group forwarding-channel-group">
-                            <div class="forwarding-channel-group__head">
-                                <label class="form-label">转发渠道</label>
-                                <div class="form-hint">支持多选；不选渠道时不会执行自动转发。</div>
-                            </div>
-                            <div class="forward-channel-picker" id="forwardChannelPicker">
-                                <label class="forward-channel-option">
-                                    <input type="checkbox" id="forwardChannelSmtp" onchange="syncForwardChannelUI()">
-                                    <span class="forward-channel-option__content">
-                                        <span class="forward-channel-option__title">SMTP</span>
-                                        <span class="forward-channel-option__meta">转发为邮件，适合归档或再次分发。</span>
-                                    </span>
-                                </label>
-                                <label class="forward-channel-option">
-                                    <input type="checkbox" id="forwardChannelTelegram" onchange="syncForwardChannelUI()">
-                                    <span class="forward-channel-option__content">
-                                        <span class="forward-channel-option__title">TG</span>
-                                        <span class="forward-channel-option__meta">转发到 Telegram，适合即时提醒。</span>
-                                    </span>
-                                </label>
-                                <label class="forward-channel-option">
-                                    <input type="checkbox" id="forwardChannelWecom" onchange="syncForwardChannelUI()">
-                                    <span class="forward-channel-option__content">
-                                        <span class="forward-channel-option__title">企业微信</span>
-                                        <span class="forward-channel-option__meta">通过群机器人 Webhook 推送到企业微信群。</span>
-                                    </span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="forward-channel-empty" id="forwardChannelEmptyState" hidden>
-                            当前未选择任何转发渠道。保存后，即使账号已开启转发，也不会向外发送通知。
-                        </div>
-                        <div class="forward-channel-panels" id="forwardChannelPanels">
-                            <section class="forward-channel-panel forward-channel-panel--smtp" data-channel="smtp" hidden>
-                                <div class="forward-channel-panel__header">
-                                    <div class="forward-channel-panel__heading">
-                                        <h5 class="forward-channel-panel__title">SMTP 转发</h5>
-                                        <p class="forward-channel-panel__desc">配置接收邮箱与 SMTP 服务器，用于邮件形式的二次转发。</p>
-                                    </div>
-                                    <div class="forward-channel-panel__actions">
-                                        <button class="btn btn-sm btn-secondary" type="button" id="testSmtpBtn" onclick="testForwardChannel('smtp')">发送测试消息</button>
-                                        <span class="forward-channel-panel__tag">SMTP</span>
-                                    </div>
-                                </div>
-                                <div class="forward-grid forward-grid--smtp">
-                                    <div class="form-group forward-field forward-field--wide">
-                                        <label class="form-label">转发到邮箱</label>
-                                        <input type="text" class="form-input" id="settingsEmailForwardRecipient" placeholder="main@example.com">
-                                    </div>
-                                    <div class="form-group forward-field">
-                                        <label class="form-label">邮箱类型</label>
-                                        <select class="form-select" id="settingsSmtpProvider" onchange="syncSmtpProviderUI(true)">
-                                            <option value="outlook">Outlook</option>
-                                            <option value="qq">QQ邮箱</option>
-                                            <option value="163">163邮箱</option>
-                                            <option value="126">126邮箱</option>
-                                            <option value="yahoo">Yahoo</option>
-                                            <option value="aliyun">阿里邮箱</option>
-                                            <option value="custom">自定义</option>
-                                        </select>
-                                        <div class="form-hint" id="settingsSmtpProviderHint">选择后会自动带出 SMTP 主机、端口和连接方式，你仍然可以继续手动修改。</div>
-                                    </div>
-                                    <div class="form-group forward-field forward-field--wide">
-                                        <label class="form-label">SMTP 主机</label>
-                                        <input type="text" class="form-input" id="settingsSmtpHost" placeholder="smtp.example.com">
-                                    </div>
-                                    <div class="form-group forward-field">
-                                        <label class="form-label">发件人邮箱</label>
-                                        <input type="text" class="form-input" id="settingsSmtpFromEmail" placeholder="noreply@example.com">
-                                        <div class="form-hint" id="settingsSmtpFromEmailHint">可选。留空时默认使用 SMTP 用户名作为发件人邮箱。</div>
-                                    </div>
-                                    <div class="form-group forward-field">
-                                        <label class="form-label">SMTP 用户名</label>
-                                        <input type="text" class="form-input" id="settingsSmtpUsername" placeholder="username">
-                                    </div>
-                                    <div class="form-group forward-field forward-field--port">
-                                        <label class="form-label">SMTP 端口</label>
-                                        <input type="number" class="form-input" id="settingsSmtpPort" value="465" min="1" max="65535">
-                                    </div>
-                                    <div class="form-group forward-field forward-field--password">
-                                        <label class="form-label">SMTP 密码</label>
-                                        <input type="password" class="form-input" id="settingsSmtpPassword" placeholder="密码或授权码">
-                                    </div>
-                                    <div class="form-group forward-field forward-field--toggles">
-                                        <label class="form-label">连接选项</label>
-                                        <div class="forward-toggle-list forward-toggle-list--inline">
-                                            <label class="forward-checkbox">
-                                                <input type="checkbox" id="settingsSmtpUseSsl" checked>
-                                                <span class="form-label">使用 SSL</span>
-                                            </label>
-                                            <label class="forward-checkbox">
-                                                <input type="checkbox" id="settingsSmtpUseTls">
-                                                <span class="form-label">使用 TLS / STARTTLS</span>
-                                            </label>
-                                        </div>
-                                    </div>
-                                </div>
-                            </section>
-                            <section class="forward-channel-panel forward-channel-panel--telegram" data-channel="telegram" hidden>
-                                <div class="forward-channel-panel__header">
-                                    <div class="forward-channel-panel__heading">
-                                        <h5 class="forward-channel-panel__title">Telegram 转发</h5>
-                                        <p class="forward-channel-panel__desc">使用 Bot Token 与 Chat ID，把新邮件摘要推送到指定 TG 会话。</p>
-                                    </div>
-                                    <div class="forward-channel-panel__actions">
-                                        <button class="btn btn-sm btn-secondary" type="button" id="testTelegramBtn" onclick="testForwardChannel('telegram')">发送测试消息</button>
-                                        <span class="forward-channel-panel__tag">TG</span>
-                                    </div>
-                                </div>
-                                <div class="forward-grid forward-grid--telegram">
-                                    <div class="form-group forward-field">
-                                        <label class="form-label">Telegram Bot Token</label>
-                                        <input type="password" class="form-input" id="settingsTelegramBotToken" placeholder="123456:ABCDEF...">
-                                    </div>
-                                    <div class="form-group forward-field">
-                                        <label class="form-label">Telegram Chat ID</label>
-                                        <input type="text" class="form-input" id="settingsTelegramChatId" placeholder="-1001234567890">
-                                    </div>
-                                    <div class="form-group forward-field">
-                                        <label class="form-label">Telegram Topic ID</label>
-                                        <input type="text" class="form-input" id="settingsTelegramTopicId" placeholder="123">
-                                        <div class="form-hint">可选。群组开启话题（Topics）后，填写话题 ID 可将消息发送到指定话题。</div>
-                                    </div>
-                                    <div class="form-group forward-field forward-field--full">
-                                        <label class="form-label">Telegram 代理</label>
-                                        <input type="text" class="form-input" id="settingsTelegramProxyUrl" placeholder="http://host:port、socks5://host:port 或 direct">
-                                        <div class="form-hint">可选。仅用于 Telegram 转发与测试发送，支持 `http://`、`socks5://`、`direct` / `直连`。</div>
-                                    </div>
-                                </div>
-                            </section>
-                            <section class="forward-channel-panel forward-channel-panel--wecom" data-channel="wecom" hidden>
-                                <div class="forward-channel-panel__header">
-                                    <div class="forward-channel-panel__heading">
-                                        <h5 class="forward-channel-panel__title">企业微信机器人转发</h5>
-                                        <p class="forward-channel-panel__desc">只填写群机器人的 Webhook 地址，系统会以文本消息推送新邮件摘要。</p>
-                                    </div>
-                                    <div class="forward-channel-panel__actions">
-                                        <button class="btn btn-sm btn-secondary" type="button" id="testWecomBtn" onclick="testForwardChannel('wecom')">发送测试消息</button>
-                                        <span class="forward-channel-panel__tag">企微</span>
-                                    </div>
-                                </div>
-                                <div class="forward-grid forward-grid--telegram">
-                                    <div class="form-group forward-field forward-field--full">
-                                        <label class="form-label">Webhook 地址</label>
-                                        <input type="text" class="form-input" id="settingsWecomWebhookUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
-                                        <div class="form-hint">在企业微信群机器人里复制完整 Webhook 地址即可，无需额外配置 Bot Token 或 Chat ID。</div>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                        <div class="settings-log-drawers">
-                            <section class="settings-log-drawer" id="forwardingLogsDrawer">
-                                <div class="settings-log-drawer__summary">
-                                    <div class="settings-log-drawer__copy">
-                                        <span class="settings-log-title">
-                                            <span>📨</span>
-                                            <span>最近转发历史</span>
-                                        </span>
-                                        <p class="settings-log-drawer__meta">默认折叠，展开后显示最近 100 条转发记录。</p>
-                                    </div>
-                                    <button class="btn btn-sm btn-secondary" type="button" id="forwardingLogsToggleBtn" onclick="toggleForwardingLogsDrawer()">查看历史</button>
-                                </div>
-                                <div id="forwardingLogsContainer" class="settings-log-block" hidden>
-                                    <div id="forwardingLogsList" class="settings-log-list"></div>
-                                </div>
-                            </section>
-                            <section class="settings-log-drawer settings-log-drawer--danger" id="failedForwardingLogsDrawer">
-                                <div class="settings-log-drawer__summary">
-                                    <div class="settings-log-drawer__copy">
-                                        <span class="settings-log-title settings-log-title--danger">
-                                            <span>❌</span>
-                                            <span>最近转发失败</span>
-                                        </span>
-                                        <p class="settings-log-drawer__meta">默认折叠，展开后显示最近 100 条失败记录。</p>
-                                    </div>
-                                    <button class="btn btn-sm btn-secondary" type="button" id="failedForwardingLogsToggleBtn" onclick="toggleFailedForwardingLogsDrawer()">查看失败</button>
-                                </div>
-                                <div id="failedForwardingLogsContainer" class="settings-log-block" hidden>
-                                    <div id="failedForwardingLogsList" class="settings-log-list settings-log-list--danger"></div>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-                </section>
                 <section class="settings-section" id="settingsCloudflareSection">
                     <div class="settings-section-head">
                         <span class="settings-section-kicker">Cloudflare</span>
@@ -850,14 +614,11 @@
                                 <button class="batch-btn batch-btn-primary" type="button" id="refreshSelectedBtn" onclick="refreshSelectedRefreshAccounts()">刷新已选</button>
                                 <button class="batch-btn batch-btn-accent" type="button" id="refreshCopySelectedBtn" onclick="copySelectedRefreshAccountsWithAliases()">复制邮箱+别名</button>
                                 <button class="batch-btn batch-btn-accent" type="button" id="refreshExportSelectedBtn" onclick="exportSelectedRefreshAccounts()">导出</button>
-                                <button class="batch-btn batch-btn-accent" type="button" id="refreshEnableForwardingBtn" onclick="enableForwardingForSelectedRefreshAccounts()">开启转发</button>
-                                <button class="batch-btn batch-btn-accent" type="button" id="refreshDisableForwardingBtn" onclick="disableForwardingForSelectedRefreshAccounts()">取消转发</button>
                                 <button class="batch-btn batch-btn-accent" type="button" id="refreshProxyBtn" onclick="showRefreshBatchProxyModal()">代理</button>
                                 <button class="batch-btn batch-btn-accent" type="button" id="refreshAddTagBtn" onclick="showRefreshBatchTagModal('add')">标签+</button>
                                 <button class="batch-btn batch-btn-accent" type="button" id="refreshRemoveTagBtn" onclick="showRefreshBatchTagModal('remove')">标签-</button>
                                 <button class="batch-btn batch-btn-accent" type="button" id="refreshMoveGroupBtn" onclick="showRefreshBatchMoveGroupModal()">移动</button>
-                                <button class="batch-btn batch-btn-accent" type="button" id="refreshEnableAccountsBtn" onclick="enableSelectedRefreshAccounts()">启用账号</button>
-                                <button class="batch-btn batch-btn-accent" type="button" id="refreshDisableAccountsBtn" onclick="disableSelectedRefreshAccounts()">停用账号</button>
+                                <button class="batch-btn batch-btn-neutral" type="button" id="refreshDisableAccountsBtn" onclick="disableSelectedRefreshAccounts()">停用账号</button>
                                 <button class="batch-btn batch-btn-danger" type="button" id="refreshDeleteSelectedBtn" onclick="deleteSelectedRefreshAccounts()">删除</button>
                             </div>
                         </div>
@@ -1154,7 +915,10 @@
                             <span class="release-notice-badge">最新</span>
                         </div>
                         <ul>
-                            <li>暂时无法获取更新内容，可查看完整更新日志。</li>
+                            <li>修复 IMAP 删信后详情错配和旧序列号可能误删其他邮件的问题。</li>
+                            <li>Gmail、Outlook IMAP 等不支持 SORT 的邮箱现在可正常使用“仅最新 N 封”分享。</li>
+                            <li>分享继续按邮件时间验证可见范围，导入旧邮件不会因 UID 较大而被额外展示。</li>
+                            <li>升级后请刷新邮件列表；旧 IMAP 缓存会失效重建，API 客户端也需重新同步邮件 ID。</li>
                         </ul>
                     </div>
                 </div>
@@ -1386,6 +1150,89 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="hideOutlookUploadAccountsModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 项目管理模态框（入口默认隐藏，需在设置中开启） -->
+    <div class="modal" id="projectManagementModal" onmousedown="if(event.target === this) hideProjectManagementModal()">
+        <div class="modal-content" style="width: min(1240px, 96vw);">
+            <div class="modal-header">
+                <h3>项目管理</h3>
+                <button class="modal-close" onclick="hideProjectManagementModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-hint project-mgmt-hint">
+                    项目把邮箱池里的邮箱按项目维度独立管理：同一个邮箱可以参与多个项目，各项目状态互不影响；领取、成功、失败等明细状态请通过项目 API 查看。删除项目只移除项目关联，不会删除邮箱账号本身。
+                </div>
+                <div class="project-mgmt-toolbar">
+                    <input type="text" id="projectSearchInput" class="form-input project-mgmt-search"
+                        placeholder="按 Key / 名称过滤" autocomplete="off" oninput="filterProjects(this.value)">
+                    <button class="btn btn-secondary" type="button" onclick="loadProjects()">刷新</button>
+                    <button class="btn btn-primary" type="button" id="projectCreateToggleBtn" onclick="toggleProjectCreateForm()">新建项目</button>
+                </div>
+                <div class="project-mgmt-create" id="projectCreateForm" style="display: none;">
+                    <div class="project-mgmt-create__grid">
+                        <div class="form-group">
+                            <label class="form-label" for="projectKeyInput">项目 Key *</label>
+                            <input type="text" class="form-input" id="projectKeyInput" placeholder="例如 my-project" autocomplete="off">
+                            <div class="form-hint">仅小写字母、数字、<code>-</code>、<code>_</code>；服务端会统一转小写。已存在的 Key 会按本次配置同步邮箱池。</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="projectNameInput">名称（可选）</label>
+                            <input type="text" class="form-input" id="projectNameInput" placeholder="项目显示名称" autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="projectDescriptionInput">描述（可选）</label>
+                            <input type="text" class="form-input" id="projectDescriptionInput" placeholder="项目用途说明" autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label class="settings-toggle settings-toggle--card">
+                                <input type="checkbox" id="projectUseAliasEmail">
+                                <span class="form-label">使用别名邮箱入池</span>
+                            </label>
+                            <div class="form-hint">开启后优先把账号的别名邮箱加入项目；没有别名的账号回退使用主邮箱。</div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">项目分组范围</label>
+                        <label class="settings-toggle settings-toggle--card project-mgmt-groups__all">
+                            <input type="checkbox" id="projectGroupSelectAll" onchange="toggleProjectGroupSelectAll(this.checked)">
+                            <span class="form-label">全选</span>
+                        </label>
+                        <div class="project-mgmt-groups" id="projectGroupCheckboxList"></div>
+                        <div class="form-hint">不选择任何分组时，项目范围为全部邮箱。范围会包含所选分组及其所有子分组中的邮箱。</div>
+                    </div>
+                    <div class="project-mgmt-create__actions">
+                        <button class="btn btn-secondary" type="button" onclick="toggleProjectCreateForm(false)">取消</button>
+                        <button class="btn btn-primary" type="button" id="submitCreateProjectBtn" onclick="submitCreateProject()">创建项目</button>
+                    </div>
+                </div>
+                <div class="project-mgmt-table-wrap">
+                    <table class="project-mgmt-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 150px; min-width: 120px;">Key</th>
+                                <th style="width: 160px; min-width: 100px;">名称</th>
+                                <th style="width: 90px; min-width: 80px;">状态</th>
+                                <th style="width: 72px; min-width: 64px;">总数</th>
+                                <th style="width: 80px; min-width: 72px;">待领取</th>
+                                <th style="width: 80px; min-width: 72px;">领取中</th>
+                                <th style="width: 80px; min-width: 72px;">已完成</th>
+                                <th style="width: 72px; min-width: 64px;">失败</th>
+                                <th style="width: 180px; min-width: 170px;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="projectsTableBody">
+                            <tr>
+                                <td colspan="9" class="project-mgmt-empty">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideProjectManagementModal()">关闭</button>
             </div>
         </div>
     </div>
@@ -1929,5 +1776,136 @@
         .upload-accounts-row--editing td:last-child {
             text-align: center;
             white-space: nowrap;
+        }
+        .project-mgmt-hint {
+            margin-bottom: 12px;
+        }
+        .project-mgmt-toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .project-mgmt-search {
+            flex: 1;
+            min-width: 180px;
+        }
+        .project-mgmt-create {
+            margin-bottom: 12px;
+            padding: 14px;
+            border: 1px solid var(--skin-border, #e5e7eb);
+            border-radius: 8px;
+            background: var(--skin-surface-muted, #f8fafc);
+        }
+        .project-mgmt-create__grid {
+            display: grid;
+            grid-template-columns: 2fr 1.5fr 1.5fr auto;
+            gap: 12px;
+            align-items: start;
+        }
+        .project-mgmt-create__actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 12px;
+        }
+        .project-mgmt-groups__all {
+            display: inline-flex;
+            margin-bottom: 8px;
+        }
+        .project-mgmt-groups {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            max-height: 132px;
+            overflow-y: auto;
+            padding: 8px 10px;
+            border: 1px solid var(--skin-border, #e5e7eb);
+            border-radius: 6px;
+            background: var(--skin-surface, #ffffff);
+        }
+        .project-mgmt-group-option {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--skin-text, #1f2937);
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        .project-mgmt-group-empty {
+            font-size: 13px;
+            color: var(--text-muted, #6b7280);
+        }
+        .project-mgmt-table-wrap {
+            min-height: 240px;
+            overflow-x: auto;
+            border: 1px solid var(--border-color, #e5e7eb);
+            border-radius: 8px;
+        }
+        .project-mgmt-table {
+            width: 100%;
+            min-width: 980px;
+            border-collapse: collapse;
+            table-layout: fixed;
+            font-size: 13px;
+        }
+        .project-mgmt-table th,
+        .project-mgmt-table td {
+            padding: 8px 10px;
+            text-align: center;
+            border-bottom: 1px solid var(--border-color, #eef0f3);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .project-mgmt-table th {
+            background: var(--table-head-bg, #f6f7f9);
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            text-align: center;
+        }
+        .project-mgmt-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .project-mgmt-table tbody tr:hover {
+            background: var(--row-hover-bg, rgba(0, 0, 0, 0.03));
+        }
+        .project-mgmt-table td.project-mgmt-empty {
+            text-align: center;
+            color: var(--text-muted, #6b7280);
+            padding: 24px 10px;
+            white-space: normal;
+        }
+        .project-mgmt-table td:last-child {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+        }
+        .project-mgmt-key {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        .project-mgmt-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .project-mgmt-badge--active {
+            background: rgba(16, 185, 129, 0.15);
+            color: #047857;
+        }
+        .project-mgmt-badge--archived {
+            background: rgba(107, 114, 128, 0.15);
+            color: #4b5563;
+        }
+        @media (max-width: 900px) {
+            .project-mgmt-create__grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>

@@ -85,6 +85,93 @@ class ProjectRuntimeTests(unittest.TestCase):
             db.commit()
             return int(cursor.lastrowid)
 
+    def test_batch_account_status_preserves_data_and_controls_account_eligibility(self):
+        account_id = self._insert_account('batch-status@example.com')
+        inactive_id = self._insert_account('already-inactive@example.com', status='inactive')
+        unselected_id = self._insert_account('unselected-status@example.com')
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            db.execute(
+                '''UPDATE accounts SET password = ?, refresh_token = ?, forward_enabled = 1,
+                   last_refresh_status = 'failed', last_refresh_error = 'expired' WHERE id = ?''',
+                (web_outlook_app.encrypt_data('saved-password'),
+                 web_outlook_app.encrypt_data('saved-token'), account_id),
+            )
+            db.commit()
+            before = dict(db.execute('SELECT * FROM accounts WHERE id = ?', (account_id,)).fetchone())
+            web_outlook_app.start_project('batch-status')
+
+        response = self.client.post('/api/accounts/batch-update-status', json={
+            'account_ids': [account_id, str(account_id), inactive_id, 99999999, 'invalid', -1],
+            'status': 'inactive',
+        })
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assertTrue(result['success'])
+        self.assertEqual(result['updated_count'], 1)
+        self.assertEqual(result['unchanged_count'], 1)
+        self.assertEqual(result['missing_ids'], [99999999])
+        self.assertEqual(result['updated_accounts'], [{'id': account_id, 'email': before['email']}])
+
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            after = dict(db.execute('SELECT * FROM accounts WHERE id = ?', (account_id,)).fetchone())
+            self.assertEqual(after['status'], 'inactive')
+            for key in before.keys() - {'status', 'updated_at'}:
+                self.assertEqual(after[key], before[key], key)
+            self.assertEqual(web_outlook_app.query_refreshable_accounts()['total'], 1)
+            self.assertEqual({a['id'] for a in web_outlook_app.get_forwarding_enabled_accounts()}, {unselected_id})
+            claim = web_outlook_app.claim_project_account('batch-status', 'worker', 'unselected')
+            self.assertEqual(claim['account_id'], unselected_id)
+            self.assertTrue(web_outlook_app.complete_project_account_success(
+                'batch-status', unselected_id, claim['claim_token'],
+            ))
+            self.assertIsNone(web_outlook_app.claim_project_account('batch-status', 'worker', 'task'))
+
+        # 停用账号仍在主页列表中，允许批量恢复。
+        accounts = self.client.get('/api/accounts/search?q=batch-status').get_json()['accounts']
+        self.assertEqual(accounts[0]['status'], 'inactive')
+        restored = self.client.post('/api/accounts/batch-update-status', json={
+            'account_ids': [account_id, inactive_id], 'status': 'active',
+        }).get_json()
+        self.assertTrue(restored['success'])
+        self.assertEqual(restored['updated_count'], 2)
+        with self.app.app_context():
+            self.assertEqual(web_outlook_app.query_refreshable_accounts()['total'], 3)
+            self.assertEqual({a['id'] for a in web_outlook_app.get_forwarding_enabled_accounts()}, {account_id, inactive_id, unselected_id})
+            claim = web_outlook_app.claim_project_account('batch-status', 'worker', 'task')
+            self.assertIn(claim['account_id'], [account_id, inactive_id])
+
+        unchanged = self.client.post('/api/accounts/batch-update-status', json={
+            'account_ids': [account_id, inactive_id], 'status': 'active',
+        }).get_json()
+        self.assertTrue(unchanged['success'])
+        self.assertEqual(unchanged['updated_count'], 0)
+        self.assertEqual(unchanged['unchanged_count'], 2)
+
+    def test_batch_account_status_rejects_invalid_requests_and_requires_login(self):
+        account_id = self._insert_account('invalid-batch-status@example.com')
+        for payload in [
+            {}, [], {'account_ids': [account_id]},
+            {'account_ids': [account_id], 'status': 'deleted'},
+            {'account_ids': [account_id], 'status': ['inactive']},
+            {'account_ids': str(account_id), 'status': 'inactive'},
+            {'account_ids': [], 'status': 'inactive'},
+            {'account_ids': [99999999], 'status': 'inactive'},
+        ]:
+            with self.subTest(payload=payload):
+                response = self.client.post('/api/accounts/batch-update-status', json=payload)
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(response.get_json()['success'])
+        with self.app.app_context():
+            row = web_outlook_app.get_db().execute('SELECT status FROM accounts WHERE id = ?', (account_id,)).fetchone()
+            self.assertEqual(row['status'], 'active')
+        response = self.app.test_client().post('/api/accounts/batch-update-status', json={
+            'account_ids': [account_id], 'status': 'inactive',
+        })
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.get_json()['success'])
+
     def _set_group_sort_order(self, group_id: int, sort_order: int):
         with self.app.app_context():
             db = web_outlook_app.get_db()
@@ -2201,6 +2288,7 @@ class ProjectRuntimeTests(unittest.TestCase):
             'inbox',
             'custom',
             '',
+            preferred_id_mode='uid',
         )
 
     def test_imap_attachment_detail_and_download_route(self):
@@ -2258,13 +2346,13 @@ class ProjectRuntimeTests(unittest.TestCase):
 
             def uid(self, command, *args, **_kwargs):
                 if command == 'FETCH':
-                    return 'OK', [(b'1 (RFC822 {256}', raw_email)]
+                    return 'OK', [(b'1 (UID 1 RFC822 {256}', raw_email)]
                 if command == 'SEARCH':
                     return 'OK', [b'1']
                 return 'OK', [b'']
 
             def fetch(self, *_args, **_kwargs):
-                return 'OK', [(b'1 (RFC822 {256}', raw_email)]
+                return 'OK', [(b'1 (UID 1 RFC822 {256}', raw_email)]
 
             def logout(self):
                 self.logged_out = True
@@ -2272,7 +2360,7 @@ class ProjectRuntimeTests(unittest.TestCase):
 
         mail = AttachmentMail()
         with patch.object(web_outlook_app, 'create_imap_connection', return_value=mail):
-            detail_response = self.client.get('/api/email/user@example.com/msg-1?method=imap&folder=inbox')
+            detail_response = self.client.get('/api/email/user@example.com/1?method=imap&folder=inbox')
             self.assertEqual(detail_response.status_code, 200)
             detail_payload = detail_response.get_json()
             self.assertTrue(detail_payload['success'])
@@ -2280,12 +2368,12 @@ class ProjectRuntimeTests(unittest.TestCase):
             self.assertEqual(detail_payload['email']['attachments'][0]['name'], 'report.txt')
             self.assertEqual(detail_payload['email']['body'], 'body line 1\nbody line 2\n')
 
-            download_response = self.client.get('/api/email/user@example.com/msg-1/attachments/attachment-1?method=imap&folder=inbox')
+            download_response = self.client.get('/api/email/user@example.com/1/attachments/attachment-1?method=imap&folder=inbox')
             self.assertEqual(download_response.status_code, 200)
             self.assertEqual(download_response.data, b'attachment body')
             self.assertIn("filename*=UTF-8''report.txt", download_response.headers.get('Content-Disposition', ''))
 
-            zip_response = self.client.get('/api/email/user@example.com/msg-1/attachments/download-all?method=imap&folder=inbox')
+            zip_response = self.client.get('/api/email/user@example.com/1/attachments/download-all?method=imap&folder=inbox')
             self.assertEqual(zip_response.status_code, 200)
             self.assertEqual(zip_response.mimetype, 'application/zip')
             self.assertIn("filename*=UTF-8''attachments.zip", zip_response.headers.get('Content-Disposition', ''))
@@ -2462,11 +2550,10 @@ class FrontendEmailBodyRetentionAndIframeTests(unittest.TestCase):
     def setUp(self):
         self.emails_js = pathlib.Path(ROOT_DIR, 'static', 'js', 'index', '05-emails.js').read_text(encoding='utf-8')
 
-    def test_body_retention_failed_requests_are_retryable(self):
-        self.assertIn('const requestedKeys = items', self.emails_js)
-        self.assertIn('requestedKeys.forEach(key => requestedBodyRetentionKeys.add(key));', self.emails_js)
-        self.assertIn('requestedKeys.forEach(key => requestedBodyRetentionKeys.delete(key));', self.emails_js)
-        self.assertIn('if (data && data.success === false)', self.emails_js)
+    def test_bodies_are_fetched_on_detail_requests_instead_of_new_row_prefetch(self):
+        self.assertNotIn("fetch('/api/emails/retain-bodies'", self.emails_js)
+        self.assertIn('function buildEmailDetailRequestUrl(', self.emails_js)
+        self.assertIn("query.set('prefer_local', '1');", self.emails_js)
 
     def test_normal_detail_iframe_resize_resources_are_cleaned(self):
         self.assertIn('const normalDetailIframeResizeResources = { timers: [], observer: null };', self.emails_js)
@@ -2536,7 +2623,7 @@ class FrontendTimezoneBootstrapTests(unittest.TestCase):
         self.assertIn('scrollbar-width: thin;', settings_css)
 
     def test_forwarding_latency_settings_ui_is_present(self):
-        settings_html = pathlib.Path(ROOT_DIR, 'templates', 'partials', 'index', 'dialogs-management.html').read_text(encoding='utf-8')
+        settings_html = pathlib.Path(ROOT_DIR, 'templates', 'partials', 'index', 'forwarding-runtime-settings.html').read_text(encoding='utf-8')
         settings_js = pathlib.Path(ROOT_DIR, 'static', 'js', 'index', '07-settings.js').read_text(encoding='utf-8')
         extension_js = pathlib.Path(ROOT_DIR, 'browser-extension', 'sidepanel.js').read_text(encoding='utf-8')
 
@@ -2746,7 +2833,7 @@ class FrontendTimezoneBootstrapTests(unittest.TestCase):
         self.assertIn('const mergeResult = mergeEmailListByStableKey(', apply_block)
         self.assertIn('currentEmails = mergeResult.emails;', apply_block)
         self.assertIn('renderEmailList(currentEmails);', apply_block)
-        self.assertIn('requestBodyRetentionForNewRows(newlySyncedRows, pending.options.folder);', apply_block)
+        self.assertNotIn('requestBodyRetentionForNewRows', apply_block)
         self.assertIn('scheduleNewEmailHighlightClear();', apply_block)
 
         self.assertIn("notice.setAttribute('role', 'button');", emails_js)
@@ -2825,12 +2912,12 @@ class FrontendTimezoneBootstrapTests(unittest.TestCase):
         settings_html = pathlib.Path(ROOT_DIR, 'templates', 'partials', 'index', 'dialogs-management.html').read_text(encoding='utf-8')
 
         self.assertLess(settings_html.index('data-target="settingsGeneralSection"'), settings_html.index('data-target="settingsRefreshSection"'))
-        self.assertLess(settings_html.index('data-target="settingsRefreshSection"'), settings_html.index('data-target="forwardingSettingsSection"'))
-        self.assertLess(settings_html.index('data-target="forwardingSettingsSection"'), settings_html.index('data-target="settingsCloudflareSection"'))
+        self.assertNotIn('data-target="forwardingSettingsSection"', settings_html)
+        self.assertLess(settings_html.index('data-target="settingsRefreshSection"'), settings_html.index('data-target="settingsCloudflareSection"'))
         self.assertLess(settings_html.index('data-target="settingsCloudflareSection"'), settings_html.index('data-target="settingsAccessSection"'))
         self.assertLess(settings_html.index('data-target="settingsAccessSection"'), settings_html.index('data-target="settingsDuckMailSection"'))
 
-        self.assertLess(settings_html.index('id="forwardingSettingsSection"'), settings_html.index('id="settingsCloudflareSection"'))
+        self.assertNotIn('id="forwardingSettingsSection"', settings_html)
         self.assertLess(settings_html.index('id="settingsCloudflareSection"'), settings_html.index('id="settingsAccessSection"'))
         self.assertLess(settings_html.index('id="settingsAccessSection"'), settings_html.index('id="settingsDuckMailSection"'))
 
@@ -2971,8 +3058,8 @@ class FrontendTimezoneBootstrapTests(unittest.TestCase):
         self.assertIn('id="refreshSelectedBtn"', settings_html)
         self.assertIn('id="refreshCopySelectedBtn"', settings_html)
         self.assertIn('id="refreshExportSelectedBtn"', settings_html)
-        self.assertIn('id="refreshEnableForwardingBtn"', settings_html)
-        self.assertIn('id="refreshDisableForwardingBtn"', settings_html)
+        self.assertNotIn('id="refreshEnableForwardingBtn"', settings_html)
+        self.assertNotIn('id="refreshDisableForwardingBtn"', settings_html)
         self.assertIn('id="refreshProxyBtn"', settings_html)
         self.assertIn('id="refreshAddTagBtn"', settings_html)
         self.assertIn('id="refreshRemoveTagBtn"', settings_html)

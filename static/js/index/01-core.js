@@ -1,4 +1,4 @@
-        /* global applyPendingNewMailSync, closeAllModals, debounce, ensureForwardingSettingsUI, handleGlobalGroupPointerMove, handleGlobalGroupPointerUp, hasPendingNewMailSync, initAccountListScroll, initAccountPageSizeSelect, initAccountSearchInput, initAccountSearchScopeSelect, initAccountSelectionGestures, initColorPicker, initEmailListScroll, loadGroups, loadMoreCloudflareGlobalMessages, loadTags, renderEmailList, saveAccountSearchQueryPreference, scheduleEmailListLoadCheck, searchAccounts */
+        /* global accountSelectionMode, applyPendingNewMailSync, closeAllModals, debounce, ensureForwardingSettingsUI, handleGlobalGroupPointerMove, handleGlobalGroupPointerUp, hasPendingNewMailSync, initAccountListScroll, initAccountPageSizeSelect, initAccountSearchInput, initAccountSearchScopeSelect, initAccountSelectionGestures, initColorPicker, initEmailListScroll, loadGroups, loadMoreCloudflareGlobalMessages, loadTags, renderEmailList, saveAccountSearchQueryPreference, scheduleEmailListLoadCheck, searchAccounts */
 
         // 全局状态
         let csrfToken = null;
@@ -105,6 +105,7 @@
         let showAccountCreatedAt = true;
         let showAccountSortOrder = false;
         let showGroupId = true;
+        let showProjectManagement = false;
         let normalMailLocalRetentionEnabled = false;
 
         function normalizeTagFilterSelectionValue(value) {
@@ -197,6 +198,18 @@
 
         function shouldShowGroupId() {
             return showGroupId !== false;
+        }
+
+        function setShowProjectManagement(enabled) {
+            showProjectManagement = enabled === true;
+            if (typeof applyProjectManagementVisibility === 'function') {
+                applyProjectManagementVisibility();
+            }
+            return showProjectManagement;
+        }
+
+        function shouldShowProjectManagement() {
+            return showProjectManagement === true;
         }
 
         function setNormalMailLocalRetentionEnabled(enabled) {
@@ -1527,6 +1540,7 @@
                 setShowAccountCreatedAt(String(data?.settings?.show_account_created_at) !== 'false');
                 setShowAccountSortOrder(String(data?.settings?.show_account_sort_order) === 'true');
                 setShowGroupId(String(data?.settings?.show_group_id) !== 'false');
+                setShowProjectManagement(String(data?.settings?.show_project_management) === 'true');
                 setNormalMailLocalRetentionEnabled(String(data?.settings?.normal_mail_local_retention_enabled) === 'true');
                 return data?.settings || null;
             } catch (error) {
@@ -2350,9 +2364,7 @@
                         : '未设置';
                 }
                 if (cursorHintEl) {
-                    cursorHintEl.textContent = account.forward_enabled
-                        ? '回退游标后，会按当前转发时间范围重新扫描最近邮件；已成功转发过的邮件仍会被去重。'
-                        : '该账号当前未开启转发，回退游标后仍需先开启账号转发。';
+                    cursorHintEl.textContent = '回退游标后，按当前通知来源规则与时间范围补扫最近邮件；已成功投递的邮件仍会去重。';
                 }
                 if (data.logs.length === 0) {
                     listEl.innerHTML = `<div style="padding: 20px; text-align: center; color: #666;">${failedOnly ? '该账号暂无失败转发日志' : '该账号暂无转发日志'}</div>`;
@@ -2815,13 +2827,8 @@ ${details}
         function updateCurrentGroupHeader(group = null, titleOverride = '') {
             const nameEl = document.getElementById('currentGroupName');
             const idBadgeEl = document.getElementById('currentGroupIdBadge');
-            const refreshBtn = document.getElementById('refreshAccountListBtn');
             if (!nameEl || !idBadgeEl) {
                 return;
-            }
-
-            if (refreshBtn) {
-                refreshBtn.style.display = (group || titleOverride) ? 'inline-flex' : 'none';
             }
 
             if (titleOverride) {
@@ -2869,34 +2876,48 @@ ${details}
             }
         }
 
+        function syncAccountMoreActiveDot() {
+            const btn = document.getElementById('accountMoreBtn');
+            if (!btn) return;
+            const panel = document.getElementById('accountPanel');
+            const minimalActive = !!panel && panel.classList.contains('minimal-mode');
+            const selectionActive = typeof accountSelectionMode !== 'undefined' && accountSelectionMode === true;
+            btn.classList.toggle('has-active', selectionActive || minimalActive);
+        }
+
+        function syncAccountMinimalMenuItem(isMinimal) {
+            const label = isMinimal ? '切换详细展示' : '切换极简展示';
+            document.querySelectorAll('.account-menu-item--minimal').forEach(item => {
+                item.classList.toggle('active', isMinimal);
+                item.setAttribute('aria-pressed', isMinimal ? 'true' : 'false');
+                item.title = label;
+                const labelEl = item.querySelector('.account-menu-item-label');
+                if (labelEl) {
+                    labelEl.textContent = label;
+                }
+            });
+        }
+
         function initAccountMinimalModeState() {
             const isMinimal = localStorage.getItem('outlook_account_list_minimal') === 'true';
             const panel = document.getElementById('accountPanel');
-            const btn = document.getElementById('accountMinimalBtn');
             if (panel) {
                 panel.classList.toggle('minimal-mode', isMinimal);
             }
-            if (btn) {
-                btn.classList.toggle('active', isMinimal);
-                btn.setAttribute('aria-pressed', isMinimal ? 'true' : 'false');
-                btn.title = isMinimal ? '切换详细展示' : '切换极简展示';
-            }
+            syncAccountMinimalMenuItem(isMinimal);
+            syncAccountMoreActiveDot();
         }
 
         function toggleAccountMinimalMode() {
             const panel = document.getElementById('accountPanel');
-            const btn = document.getElementById('accountMinimalBtn');
             if (!panel) return;
 
             const isMinimal = !panel.classList.contains('minimal-mode');
             panel.classList.toggle('minimal-mode', isMinimal);
             localStorage.setItem('outlook_account_list_minimal', String(isMinimal));
 
-            if (btn) {
-                btn.classList.toggle('active', isMinimal);
-                btn.setAttribute('aria-pressed', isMinimal ? 'true' : 'false');
-                btn.title = isMinimal ? '切换详细展示' : '切换极简展示';
-            }
+            syncAccountMinimalMenuItem(isMinimal);
+            syncAccountMoreActiveDot();
         }
 
         // ==================== 主题与列表刷新相关 ====================

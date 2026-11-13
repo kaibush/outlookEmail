@@ -20,6 +20,8 @@ EMAIL_SHARE_STATUS_ACTIVE = 'active'
 EMAIL_SHARE_STATUS_EXPIRED = 'expired'
 EMAIL_SHARE_STATUS_REVOKED = 'revoked'
 EMAIL_SHARE_STATUS_INVALID = 'invalid'
+EMAIL_SHARE_STATUS_ACCESS_CODE_REQUIRED = 'access_code_required'
+EMAIL_SHARE_MAX_VERIFIED_LINKS = 20
 EMAIL_SHARE_ALLOWED_FOLDERS = {'inbox', 'junkemail'}
 EMAIL_SHARE_ALLOWED_FOLDER_ORDER = ('inbox', 'junkemail')
 EMAIL_SHARE_ACCESS_TOUCH_MIN_SECONDS = 300
@@ -31,6 +33,31 @@ def generate_email_share_token() -> str:
 
 def hash_email_share_token(token: str) -> str:
     return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+
+def normalize_email_share_access_code(value: Any) -> tuple[Optional[str], Optional[str]]:
+    if value is None or value == '':
+        return '', None
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9]{4,32}', value):
+        return None, '访问码须为 4–32 位英文字母或数字'
+    return value, None
+
+
+def email_share_access_grant(share: Dict[str, Any]) -> str:
+    return hash_email_share_token(f"{share['token_hash']}:{share.get('access_code_hash') or ''}")
+
+
+def has_email_share_access(share: Dict[str, Any]) -> bool:
+    return not share.get('access_code_hash') or email_share_access_grant(share) in session.get(
+        'email_share_access', []
+    )
+
+
+@app.after_request
+def disable_email_share_cache(response):
+    if request.path.startswith(('/share/email/', '/api/share/email/')):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 def parse_share_timestamp(value: Any) -> Optional[datetime]:
@@ -160,6 +187,7 @@ def serialize_email_share_row(row: Any) -> Dict[str, Any]:
         'updated_at': share.get('updated_at'),
         'status': status,
         'share_url': share_url,
+        'requires_access_code': bool(share.get('access_code_hash')),
     }
 
 
@@ -244,6 +272,9 @@ def resolve_active_email_share(token: str) -> tuple[Optional[Dict[str, Any]], Op
     if status != EMAIL_SHARE_STATUS_ACTIVE:
         return share, None, status
 
+    if not has_email_share_access(share):
+        return share, None, EMAIL_SHARE_STATUS_ACCESS_CODE_REQUIRED
+
     account = get_account_by_id(int(share['account_id']))
     if not account:
         return share, None, EMAIL_SHARE_STATUS_INVALID
@@ -302,6 +333,13 @@ def parse_email_share_create_payload(
 
 
 def email_share_error_payload(status: str) -> Dict[str, Any]:
+    if status == EMAIL_SHARE_STATUS_ACCESS_CODE_REQUIRED:
+        return {
+            'success': False,
+            'status': status,
+            'requires_access_code': True,
+            'error': '请输入访问码',
+        }
     if status == EMAIL_SHARE_STATUS_EXPIRED:
         message = '分享链接已过期'
     elif status == EMAIL_SHARE_STATUS_REVOKED:
@@ -309,6 +347,12 @@ def email_share_error_payload(status: str) -> Dict[str, Any]:
     else:
         message = '分享链接无效'
     return {'success': False, 'status': status, 'error': message}
+
+
+def email_share_error_response(status: str):
+    return jsonify(email_share_error_payload(status)), (
+        403 if status == EMAIL_SHARE_STATUS_ACCESS_CODE_REQUIRED else 404
+    )
 
 
 def reject_share_if_account_mismatch(account: Dict[str, Any]) -> Optional[Any]:
@@ -422,20 +466,26 @@ def collect_email_share_candidate_page(
 
 
 def resolve_email_share_visible_messages(
-    account: Dict[str, Any], max_email_count: int
+    account: Dict[str, Any], max_email_count: int, folder: Optional[str] = None
 ) -> Dict[str, Any]:
+    """解析受限分享可见的最新邮件。
+
+    传入 ``folder`` 时只抓取该文件夹，数量上限按文件夹分别生效，这样分享页
+    进入收件箱不必为垃圾邮件付出请求开销；不传时保持跨文件夹合并的旧行为。
+    """
+    folder_order = (folder,) if folder else EMAIL_SHARE_ALLOWED_FOLDER_ORDER
     candidates = []
     methods = []
     seen_candidates = set()
     folder_states = {
-        folder: {
+        folder_name: {
             'skip': 0,
             'fetched_count': 0,
             'has_more': False,
             'oldest_date': None,
             'request_method': None,
         }
-        for folder in EMAIL_SHARE_ALLOWED_FOLDER_ORDER
+        for folder_name in folder_order
     }
     missing_marker = object()
     previous_disable_record = account.get('_disable_authorization_type_record', missing_marker)
@@ -443,7 +493,7 @@ def resolve_email_share_visible_messages(
     stable_ids_context_token = email_share_stable_ids_context.set(True)
 
     try:
-        for folder in EMAIL_SHARE_ALLOWED_FOLDER_ORDER:
+        for folder in folder_order:
             result = fetch_account_emails(
                 account, folder, 0, EMAIL_SHARE_CANDIDATE_PAGE_SIZE
             )
@@ -476,7 +526,7 @@ def resolve_email_share_visible_messages(
             if len(sorted_candidates) >= max_email_count and cutoff_date is None:
                 return email_share_visible_messages_error()
             folders_to_fetch = [
-                folder for folder in EMAIL_SHARE_ALLOWED_FOLDER_ORDER
+                folder for folder in folder_order
                 if folder_states[folder]['has_more']
                 and (
                     cutoff_date is None
@@ -537,7 +587,7 @@ def fetch_limited_email_share_emails(
     if skip >= max_email_count:
         return {'success': True, 'emails': [], 'method': '', 'has_more': False}
 
-    visible_result = resolve_email_share_visible_messages(account, max_email_count)
+    visible_result = resolve_email_share_visible_messages(account, max_email_count, folder)
     if not visible_result.get('success'):
         return visible_result
 
@@ -581,15 +631,20 @@ def api_create_email_share():
     if payload_error:
         return jsonify({'success': False, 'error': payload_error}), 400
 
+    access_code, access_code_error = normalize_email_share_access_code(data.get('access_code'))
+    if access_code_error:
+        return jsonify({'success': False, 'error': access_code_error}), 400
+
     token = generate_email_share_token()
     expires_at = None if never_expires else utc_timestamp(duration_minutes)
     db = get_db()
     cursor = db.execute(
         '''
         INSERT INTO email_share_links (
-            account_id, token_hash, token_encrypted, expires_at, never_expires, max_email_count
+            account_id, token_hash, token_encrypted, expires_at, never_expires, max_email_count,
+            access_code_hash
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ''',
         (
             int(account['id']),
@@ -598,6 +653,7 @@ def api_create_email_share():
             expires_at,
             1 if never_expires else 0,
             max_email_count,
+            hash_password(access_code) if access_code else None,
         )
     )
     db.commit()
@@ -728,20 +784,63 @@ def api_batch_delete_email_shares():
 def view_email_share(token):
     share = get_email_share_row_by_token(token)
     status = get_email_share_status(share or {})
-    account_email = share.get('email') if share else ''
+    account_email = ''
+    if status == EMAIL_SHARE_STATUS_ACTIVE:
+        if has_email_share_access(share):
+            account_email = share.get('email', '')
+        else:
+            status = EMAIL_SHARE_STATUS_ACCESS_CODE_REQUIRED
     return render_template(
         'email_share.html',
         share_token=token,
         share_status=status,
         account_email=account_email,
+        dompurify_asset_hash=get_dompurify_asset_hash(),
     )
+
+
+@app.route('/api/share/email/<token>/verify', methods=['POST'])
+def api_verify_email_share_access_code(token):
+    share = get_email_share_row_by_token(token)
+    status = get_email_share_status(share or {})
+    if status != EMAIL_SHARE_STATUS_ACTIVE:
+        return email_share_error_response(status)
+    if not share.get('access_code_hash'):
+        return jsonify({'success': True})
+
+    rate_limit_key = f"email-share:{share['token_hash']}:{request.remote_addr}"
+    locked_until = login_attempts.get(rate_limit_key, {}).get('locked_until')
+    if locked_until is not None and time.time() >= locked_until:
+        reset_login_attempts(rate_limit_key)
+    allowed, retry_after = check_rate_limit(rate_limit_key)
+    if not allowed:
+        response = jsonify({'success': False, 'error': '访问码尝试次数过多，请稍后重试'})
+        response.headers['Retry-After'] = str(max(1, retry_after))
+        return response, 429
+
+    data = request.get_json(silent=True)
+    access_code, error = normalize_email_share_access_code(
+        data.get('access_code') if isinstance(data, dict) else None
+    )
+    if error or not access_code or not verify_password(access_code, share['access_code_hash']):
+        record_login_failure(rate_limit_key)
+        payload = email_share_error_payload(EMAIL_SHARE_STATUS_ACCESS_CODE_REQUIRED)
+        payload['error'] = '访问码错误，请重试'
+        return jsonify(payload), 403
+
+    reset_login_attempts(rate_limit_key)
+    grant = email_share_access_grant(share)
+    grants = [value for value in session.get('email_share_access', []) if value != grant]
+    # 限制已验证链接数，避免 Flask 的 Cookie Session 随访问次数无限增长。
+    session['email_share_access'] = (grants + [grant])[-EMAIL_SHARE_MAX_VERIFIED_LINKS:]
+    return jsonify({'success': True})
 
 
 @app.route('/api/share/email/<token>/status', methods=['GET'])
 def api_email_share_status(token):
     share, account, status = resolve_active_email_share(token)
     if status != EMAIL_SHARE_STATUS_ACTIVE:
-        return jsonify(email_share_error_payload(status)), 404
+        return email_share_error_response(status)
     return jsonify({
         'success': True,
         'status': status,
@@ -760,7 +859,7 @@ def api_email_share_get_emails(token):
 
     share, account, status = resolve_active_email_share(token)
     if status != EMAIL_SHARE_STATUS_ACTIVE:
-        return jsonify(email_share_error_payload(status)), 404
+        return email_share_error_response(status)
 
     mismatch_response = reject_share_if_account_mismatch(account)
     if mismatch_response:
@@ -784,7 +883,7 @@ def api_email_share_get_email_detail(token, message_id):
 
     share, account, status = resolve_active_email_share(token)
     if status != EMAIL_SHARE_STATUS_ACTIVE:
-        return jsonify(email_share_error_payload(status)), 404
+        return email_share_error_response(status)
 
     mismatch_response = reject_share_if_account_mismatch(account)
     if mismatch_response:
@@ -794,7 +893,7 @@ def api_email_share_get_email_detail(token, message_id):
     id_mode = normalize_email_share_message_id_mode(request.args.get('id_mode'))
     max_email_count = get_email_share_max_email_count(share)
     if max_email_count is not None:
-        visible_result = resolve_email_share_visible_messages(account, max_email_count)
+        visible_result = resolve_email_share_visible_messages(account, max_email_count, folder)
         if not visible_result.get('success'):
             return jsonify(visible_result)
         visible_email = find_email_share_visible_message(

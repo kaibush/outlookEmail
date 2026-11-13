@@ -14,6 +14,9 @@
                     <label class="form-label">分组描述</label>
                     <input type="text" class="form-input" id="groupDescription" placeholder="可选">
                 </div>
+                <div class="settings-action-row">
+                    <button class="btn btn-secondary" type="button" onclick="editingGroupId ? openForwardingSource('group', editingGroupId) : showToast('请先保存分组，再设置通知', 'info')">通知渠道与继承设置</button>
+                </div>
                 <div class="form-group">
                     <label class="form-label">排序位置</label>
                     <select class="form-select" id="groupSortPosition"></select>
@@ -120,6 +123,7 @@
                                 <label class="form-label">邮箱类型</label>
                                 <select class="form-select" id="importProviderSelect" onchange="updateImportHint()">
                                     <option value="outlook">Outlook OAuth</option>
+                                    <option value="icloud">iCloud（App 专用密码）</option>
                                     <option value="gmail">Gmail</option>
                                     <option value="qq">QQ</option>
                                     <option value="163">163</option>
@@ -139,6 +143,18 @@
                                     <label class="form-label">IMAP 端口</label>
                                     <input type="number" class="form-input" id="importImapPort" value="993" min="1" max="65535">
                                 </div>
+                            </div>
+                            <div class="form-group edit-account-span-2" id="importGraphScopeGroup">
+                                <label class="form-label">Token Scope</label>
+                                <select class="form-select" id="importGraphScopeSelect" onchange="syncGraphScopeCustomVisibility('importGraphScopeSelect', 'importGraphScopeCustom')">
+                                    <option value="">自动（依次回退并记住成功项）</option>
+                                    <option value="https://graph.microsoft.com/.default">.default（推荐）</option>
+                                    <option value="https://graph.microsoft.com/Mail.Read offline_access">Mail.Read + offline_access（只读）</option>
+                                    <option value="https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access">完整 Graph 权限（读 / 写 / 发信）</option>
+                                    <option value="__custom__">自定义…</option>
+                                </select>
+                                <input type="text" class="form-input" id="importGraphScopeCustom" placeholder="自定义 scope，例如 https://graph.microsoft.com/Mail.Read offline_access" style="display: none; margin-top: 8px;">
+                                <div class="form-hint">自动模式会按配置、只读、.default 顺序回退，并记住最近一次成功的 scope 加速后续请求。</div>
                             </div>
                             <div class="form-group import-account-default-field">
                                 <label class="form-label">备注</label>
@@ -169,13 +185,6 @@
                                     <option value="active">正常</option>
                                     <option value="inactive">停用</option>
                                 </select>
-                            </div>
-                            <div class="form-group import-account-default-field" id="importForwardGroup">
-                                <label class="settings-toggle settings-toggle--inline">
-                                    <input type="checkbox" id="importForwardEnabled">
-                                    <span class="form-label">导入后启用邮件转发</span>
-                                </label>
-                                <div class="form-hint">开启后，新导入账号会立即参与转发轮询。</div>
                             </div>
                         </div>
                     </section>
@@ -208,6 +217,9 @@
             </div>
             <div class="modal-body edit-account-modal-body">
                 <input type="hidden" id="editAccountId">
+                <div class="settings-action-row">
+                    <button class="btn btn-secondary" type="button" onclick="openForwardingSource('account', Number(document.getElementById('editAccountId').value))">此邮箱的通知设置</button>
+                </div>
                 <div class="edit-account-shell">
                     <section class="edit-account-card edit-account-card--primary">
                         <div class="edit-account-card-head">
@@ -224,6 +236,7 @@
                                 <label class="form-label">邮箱类型</label>
                                 <select class="form-select" id="editProviderSelect" onchange="updateEditAccountFields()">
                                     <option value="outlook">Outlook OAuth</option>
+                                    <option value="icloud">iCloud（App 专用密码）</option>
                                     <option value="gmail">Gmail</option>
                                     <option value="qq">QQ</option>
                                     <option value="163">163</option>
@@ -251,13 +264,6 @@
                                 <label class="form-label">排序值</label>
                                 <input type="number" class="form-input" id="editSortOrder" min="0" step="1" value="0">
                                 <div class="form-hint">值越小越靠前，填 0 表示不参与自定义排序。</div>
-                            </div>
-                            <div class="form-group edit-account-span-2">
-                                <label class="settings-toggle settings-toggle--inline">
-                                    <input type="checkbox" id="editForwardEnabled">
-                                    <span class="form-label">启用邮件转发</span>
-                                </label>
-                                <div class="form-hint">开启后会按系统设置转发到邮箱或 Telegram。</div>
                             </div>
                             <div class="form-group edit-account-span-2">
                                 <label class="form-label">标签</label>
@@ -310,6 +316,18 @@
                                     <option value="imap">IMAP</option>
                                 </select>
                                 <div class="form-hint">首选通道失败时会自动回退到另一通道，并记录实际成功通道。</div>
+                            </div>
+                            <div class="form-group edit-account-span-2" id="editGraphScopeGroup">
+                                <label class="form-label">Token Scope</label>
+                                <select class="form-select" id="editGraphScopeSelect" onchange="syncGraphScopeCustomVisibility('editGraphScopeSelect', 'editGraphScopeCustom')">
+                                    <option value="">自动（依次回退并记住成功项）</option>
+                                    <option value="https://graph.microsoft.com/.default">.default（推荐）</option>
+                                    <option value="https://graph.microsoft.com/Mail.Read offline_access">Mail.Read + offline_access（只读）</option>
+                                    <option value="https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access">完整 Graph 权限（读 / 写 / 发信）</option>
+                                    <option value="__custom__">自定义…</option>
+                                </select>
+                                <input type="text" class="form-input" id="editGraphScopeCustom" placeholder="自定义 scope，例如 https://graph.microsoft.com/Mail.Read offline_access" style="display: none; margin-top: 8px;">
+                                <div class="form-hint">自动模式会按配置、只读、.default 顺序回退，并记住最近一次成功的 scope 加速后续请求。</div>
                             </div>
                             <div class="form-group edit-account-span-2">
                                 <label class="form-label">Refresh Token</label>
@@ -386,6 +404,7 @@
                             <div class="form-group">
                                 <label class="form-label">别名邮箱</label>
                                 <textarea class="form-textarea edit-account-note" id="editAliases" placeholder="每行一个别名邮箱，例如&#10;alias1@example.com&#10;alias2@example.com" rows="4"></textarea>
+                                <p id="editManagedAliases" class="form-hint"></p>
                                 <div class="form-hint">支持多个别名。保存后，可直接用别名邮箱调用 API 获取该账号收到的邮件或验证码。</div>
                             </div>
                         </div>
@@ -506,6 +525,11 @@
                     <input type="text" class="form-input" id="emailShareAccountEmail" readonly>
                 </div>
                 <div class="form-group">
+                    <label class="form-label" for="emailShareAccessCode">访问码（可选）</label>
+                    <input type="text" class="form-input" id="emailShareAccessCode" minlength="4" maxlength="32" pattern="[A-Za-z0-9]{4,32}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空则无需访问码">
+                    <div class="form-hint">4–32 位英文字母或数字，区分大小写。设置后，访客需输入访问码才能查看邮箱。</div>
+                </div>
+                <div class="form-group">
                     <label class="form-label">有效期</label>
                     <select class="form-select" id="emailShareDurationPreset" onchange="syncEmailShareDurationPreset()">
                         <option value="60">1 小时</option>
@@ -529,7 +553,7 @@
                 <div class="form-group" id="emailShareMaxEmailCountGroup" style="display: none;">
                     <label class="form-label" for="emailShareMaxEmailCount">最新邮件数量</label>
                     <input type="number" class="form-input" id="emailShareMaxEmailCount" min="1" max="50" step="1" value="1" oninput="updateEmailShareRollingWarning()">
-                    <div class="form-hint">收件箱和垃圾邮件合计仅显示当前最新的 N 封。</div>
+                    <div class="form-hint">收件箱和垃圾邮件分别仅显示各自最新的 N 封。</div>
                 </div>
                 <div class="form-group">
                     <label class="settings-toggle settings-toggle--inline">
