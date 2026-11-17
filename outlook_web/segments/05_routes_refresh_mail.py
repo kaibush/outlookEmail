@@ -27,6 +27,109 @@ token_refresh_stop_event = threading.Event()
 selected_refresh_tasks: Dict[str, Dict[str, Any]] = {}
 selected_refresh_tasks_lock = threading.Lock()
 
+from outlook_web.token_refresh_queue import RefreshQueue
+refresh_queue = RefreshQueue(DATABASE)
+
+
+def process_queued_refresh_account(account_id, mode, conn):
+    account = conn.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
+    if not is_outlook_refreshable_account(account):
+        return {'skipped': True, 'message': '账号已删除或停用，跳过刷新'}
+    try:
+        result = refresh_outlook_account_token(
+            account, 'scheduled' if mode == 'scheduled' else 'manual_queue', db_conn=conn)
+        # Queue results contain public diagnostics only, never credentials.
+        public_result = {key: result[key] for key in (
+            'success', 'message', 'error_message', 'token_rotated',
+            'last_refresh_at', 'last_refresh_success_at', 'refresh_token_updated_at'
+        ) if key in result}
+        public_result['email'] = account['email']
+        return public_result
+    except Exception as exc:
+        conn.rollback()
+        message = sanitize_error_details(str(exc))[:500]
+        log_refresh_result(account_id, account['email'], 'manual_queue', 'failed', message, db_conn=conn)
+        return {'success': False, 'error_message': message}
+
+
+def process_refresh_queue():
+    # Retain compatibility with older synchronous callers in this process.
+    if not token_refresh_run_lock.acquire(blocking=False):
+        return
+    try:
+        with app.app_context():
+            refresh_queue.run_next(process_queued_refresh_account)
+    finally:
+        token_refresh_run_lock.release()
+
+
+def enqueue_refresh_job(mode, account_ids=None):
+    db = get_db()
+    if mode == 'selected':
+        ids = normalize_refresh_account_ids(account_ids or [])
+        if not ids:
+            raise ValueError('请选择要刷新的账号')
+        rows = load_selected_outlook_accounts_for_refresh(db, ids)
+    else:
+        where = "status='active' AND COALESCE(account_type,'outlook')='outlook'"
+        params = []
+        if mode == 'failed':
+            where += " AND last_refresh_status='failed'"
+        elif mode == 'never':
+            where += " AND COALESCE(NULLIF(last_refresh_status,''),'never')='never'"
+        elif mode == 'scheduled':
+            days = max(1, min(90, int(get_setting('refresh_interval_days', '30'))))
+            where += " AND (last_refresh_success_at IS NULL OR last_refresh_success_at='' OR last_refresh_success_at <= datetime('now',?))"
+            params.append(f'-{days} days')
+        rows = db.execute(f'SELECT id FROM accounts WHERE {where}', params).fetchall()
+    if not rows:
+        raise ValueError('没有符合条件的启用账号')
+    return refresh_queue.submit(mode, [row['id'] for row in rows], get_refresh_delay_seconds(db))
+
+
+@app.route('/api/accounts/refresh-jobs', methods=['POST'])
+@login_required
+def api_create_refresh_job():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='请求必须是 JSON 对象'), 400
+    mode = data.get('mode', 'all')
+    if not isinstance(mode, str) or mode not in {'all', 'failed', 'never', 'selected'}:
+        return jsonify(success=False, message='刷新范围无效'), 400
+    if mode == 'selected' and not isinstance(data.get('account_ids'), list):
+        return jsonify(success=False, message='account_ids 必须是数组'), 400
+    try:
+        job_id, created = enqueue_refresh_job(mode, data.get('account_ids'))
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    return jsonify(success=created, job=refresh_queue.snapshot(job_id),
+                   message='任务已加入后台队列' if created else '已有刷新任务，请等待完成或停止任务'), 202 if created else 409
+
+
+@app.route('/api/accounts/refresh-jobs/latest', methods=['GET'])
+@login_required
+def api_latest_refresh_job():
+    return jsonify(success=True, job=refresh_queue.snapshot())
+
+
+@app.route('/api/accounts/refresh-jobs/<job_id>/stop', methods=['POST'])
+@login_required
+def api_stop_refresh_job(job_id):
+    if not refresh_queue.stop(job_id):
+        return jsonify(success=False, message='任务已结束或不存在'), 409
+    return jsonify(success=True, message='已请求停止，当前账号完成后停止；未处理账号可重新提交')
+
+
+@app.route('/api/accounts/refresh-jobs/<job_id>/resume', methods=['POST'])
+@login_required
+def api_resume_refresh_job(job_id):
+    try:
+        new_id, created = refresh_queue.resume(job_id)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    return jsonify(success=created, job=refresh_queue.snapshot(new_id),
+                   message='未完成账号已重新入队' if created else '已有刷新任务'), 202 if created else 409
+
 
 def normalize_account_refresh_status_value(status: Any) -> str:
     normalized = str(status or '').strip().lower()
@@ -296,6 +399,8 @@ def build_refresh_stats(db_conn=None) -> Dict[str, Any]:
     never_count = counts_row['never_count'] if counts_row and counts_row['never_count'] is not None else 0
 
     snapshot_status = str(snapshot.get('status') or '').strip().lower()
+    if snapshot_status == 'running' and not token_refresh_run_lock.locked():
+        snapshot_status = 'interrupted'
     last_refresh_time = snapshot.get('finished_at')
     if not last_refresh_time:
         row = db.execute(
@@ -307,7 +412,7 @@ def build_refresh_stats(db_conn=None) -> Dict[str, Any]:
         ).fetchone()
         last_refresh_time = row['last_refresh_time'] if row else None
 
-    if snapshot_status not in {'running', 'success', 'partial_failed', 'failed'}:
+    if snapshot_status not in {'running', 'success', 'partial_failed', 'failed', 'interrupted'}:
         if total_count <= 0 or never_count == total_count:
             snapshot_status = 'idle'
         elif failed_count <= 0:
@@ -316,6 +421,20 @@ def build_refresh_stats(db_conn=None) -> Dict[str, Any]:
             snapshot_status = 'partial_failed'
         else:
             snapshot_status = 'failed'
+
+    queue_job = refresh_queue.snapshot()
+    if queue_job:
+        if queue_job['status'] in {'queued', 'running'}:
+            snapshot_status = 'running'
+        elif queue_job['status'] == 'stopped':
+            snapshot_status = 'stopped'
+        else:
+            failed = queue_job['counts'].get('failed', 0)
+            succeeded = queue_job['counts'].get('success', 0)
+            snapshot_status = ('partial_failed' if succeeded else 'failed') if failed else 'success'
+        if queue_job.get('finished_at'):
+            from datetime import datetime, timezone
+            last_refresh_time = datetime.fromtimestamp(queue_job['finished_at'], timezone.utc).replace(tzinfo=None).isoformat()
 
     return {
         'total': total_count,
@@ -366,6 +485,9 @@ def is_token_refresh_stop_requested() -> bool:
 
 
 def acquire_token_refresh_run_lock() -> None:
+    queue_job = refresh_queue.snapshot()
+    if queue_job and queue_job['status'] in {'queued', 'running'}:
+        raise TokenRefreshInProgressError(TOKEN_REFRESH_CONFLICT_MESSAGE)
     if not token_refresh_run_lock.acquire(blocking=False):
         raise TokenRefreshInProgressError(TOKEN_REFRESH_CONFLICT_MESSAGE)
 

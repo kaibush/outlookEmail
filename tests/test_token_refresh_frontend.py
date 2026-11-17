@@ -116,3 +116,47 @@ class TokenRefreshFrontendTests(unittest.TestCase):
         self.assertEqual(result['last_refresh_at'], '2026-10-22 03:00:00')
         self.assertEqual(result['last_refresh_success_at'], '2026-10-21 03:00:00')
         self.assertEqual(result['refresh_token_updated_at'], '2026-10-01 03:00:00')
+
+    def test_queue_progress_is_separate_from_account_totals(self):
+        result = run_frontend('''(() => {
+            getAppTimeZone = () => 'UTC';
+            syncRefreshPaginationControls = () => {};
+            renderRefreshRuntimeLogs = () => {};
+            setRefreshSnapshotCounts(14000, 1200, 7);
+            renderRefreshQueueJob({id: 'job', status: 'running', total: 20,
+                completed: 3, remaining: 17, counts: {success: 2, failed: 1},
+                updated_at: 1700000000, delay_seconds: 5, results: []});
+            return {running: refreshModalState.isRunning,
+                total: document.getElementById('totalRefreshCount').textContent,
+                neverDisabled: document.getElementById('refreshNeverBtn').disabled,
+                resumeHidden: document.getElementById('resumeRefreshBtn').hidden,
+                progress: document.getElementById('refreshQueueProgress').value,
+                detail: document.getElementById('refreshQueueDetail').textContent};
+        })()''')
+        self.assertTrue(result['running'])
+        self.assertEqual(result['total'], '14000')
+        self.assertEqual(result['progress'], 3)
+        self.assertTrue(result['neverDisabled'])
+        self.assertTrue(result['resumeHidden'])
+        self.assertIn('未处理 17', result['detail'])
+
+    def test_batch_submission_uses_post_and_reattaches_on_conflict(self):
+        result = run_frontend('''(async () => {
+            getAppTimeZone = () => 'UTC';
+            syncRefreshPaginationControls = () => {};
+            renderRefreshRuntimeLogs = () => {};
+            startRefreshQueuePolling = () => events.push(['poll']);
+            fetch = async (url, options) => {
+                events.push(['request', url, JSON.parse(options.body)]);
+                return {ok: false, status: 409, json: async () => ({success: false,
+                    message: '已有刷新任务', job: {id: 'existing', status: 'queued',
+                        total: 1, completed: 0, remaining: 1, counts: {},
+                        updated_at: 1700000000, delay_seconds: 5, results: []}})};
+            };
+            await submitRefreshQueue('selected', [1]);
+            return {events, id: refreshModalState.job.id, running: refreshModalState.isRunning};
+        })()''')
+        self.assertEqual(result['id'], 'existing')
+        self.assertTrue(result['running'])
+        self.assertIn(['request', '/api/accounts/refresh-jobs', {'mode': 'selected', 'account_ids': [1]}], result['events'])
+        self.assertIn(['poll'], result['events'])

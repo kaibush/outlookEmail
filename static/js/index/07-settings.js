@@ -663,7 +663,7 @@
         // 切换刷新策略
         function toggleRefreshStrategy() {
             const strategy = document.querySelector('input[name="refreshStrategy"]:checked').value;
-            document.getElementById('daysStrategyContainer').style.display = strategy === 'days' ? 'block' : 'none';
+            document.getElementById('daysStrategyContainer').style.display = 'block';
             document.getElementById('cronStrategyContainer').style.display = strategy === 'cron' ? 'block' : 'none';
         }
 
