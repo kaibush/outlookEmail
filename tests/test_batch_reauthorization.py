@@ -119,3 +119,47 @@ def test_invalid_requests(client, data):
 def test_authorization_job_requires_login(client):
     response = web.app.test_client().post('/api/accounts/reauthorization-jobs', json={'scope': 'failed'})
     assert response.status_code in (302, 401)
+
+
+def test_browser_engine_dispatch_and_repair_only_on_expiry(client, account, monkeypatch):
+    from outlook_web import browser_oauth
+    browser = Mock(return_value={'success': False, 'error': 'MFA required'})
+    monkeypatch.setattr(browser_oauth, 'browser_refresh_token', browser)
+    monkeypatch.setattr(web, 'refresh_outlook_account_token', Mock(return_value={
+        'success': False, 'error_message': 'invalid_grant: expired'}))
+    response = client.post('/api/accounts/reauthorization-jobs', json={
+        'scope':'selected','account_ids':[account],'engine':'browser','action':'repair'})
+    assert response.status_code == 202
+    assert response.json['job']['mode'] == 'repair:browser:auto'
+    with web.app.app_context(), web.refresh_queue.connect() as db:
+        result = web.process_queued_refresh_account(account, 'repair:browser:auto', db)
+    assert browser.call_count == 1
+    assert not result['success']
+    browser.reset_mock()
+    web.refresh_outlook_account_token.return_value = {'success': False, 'error_message': 'Connection timed out'}
+    with web.app.app_context(), web.refresh_queue.connect() as db:
+        web.process_queued_refresh_account(account, 'repair:browser:auto', db)
+    assert not browser.called
+
+
+@pytest.mark.parametrize('http_result, browser_expected', [
+    ({'success':True,'client_id':'client','refresh_token':'fresh'}, False),
+    ({'success':False,'error':'无法提取 Flow Token'}, True),
+    ({'success':False,'error':'需要额外验证'}, True),
+    ({'success':False,'error':'Connection timed out'}, False),
+    ({'success':False,'error':'密码不正确或账号不存在'}, False),
+])
+def test_http_first_only_uses_browser_for_interactive_failures(client, account, monkeypatch, http_result, browser_expected):
+    from outlook_web import browser_oauth
+    http = Mock(return_value=http_result)
+    browser = Mock(return_value={'success':True,'client_id':'client','refresh_token':'browser-fresh'})
+    monkeypatch.setattr(web,'extract_graph_refresh_token',http)
+    monkeypatch.setattr(browser_oauth,'browser_refresh_token',browser)
+    response=Mock(status_code=200)
+    response.json.return_value={'access_token':'valid'}
+    monkeypatch.setattr(web,'request_imap_token_response',Mock(return_value=response))
+    with web.app.app_context(), web.refresh_queue.connect() as db:
+        result=web.process_queued_refresh_account(account,'reauthorize:fallback:auto',db)
+    assert http.call_count == 1
+    assert browser.called == browser_expected
+    assert result['success'] == (http_result['success'] or browser_expected)

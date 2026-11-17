@@ -3187,7 +3187,7 @@ class FrontendTimezoneBootstrapTests(unittest.TestCase):
         self.assertNotIn('showFailedListFromData', refresh_js)
         self.assertNotIn('loadRefreshLogs', refresh_js)
         self.assertNotIn('setRefreshProgressBanner', refresh_js)
-        self.assertIn("await openRefreshModalWithStatus('failed');", batch_js)
+        self.assertIn("submitBrowserAuthorization(getAccountBatchSelectedIds(context), 'repair')", batch_js)
         self.assertIn('.refresh-log-panel', modal_css)
         self.assertIn('.refresh-log-list', modal_css)
         self.assertIn('.refresh-account-table-wrap', modal_css)

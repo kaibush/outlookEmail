@@ -40,6 +40,11 @@ def process_queued_refresh_account(account_id, mode, conn):
             return reauthorize_queued_account(account, mode.split(':', 1)[1], conn)
         result = refresh_outlook_account_token(
             account, 'scheduled' if mode == 'scheduled' else 'manual_queue', db_conn=conn)
+        if mode.startswith('repair:') and not result.get('success'):
+            reason = str(result.get('error_message') or '').lower()
+            if any(marker in reason for marker in ('invalid_grant', 'expired', 'revoked', '过期', '700082', '授权失效')):
+                conn.rollback()
+                return reauthorize_queued_account(account, mode.split(':', 1)[1], conn)
         # Queue results contain public diagnostics only, never credentials.
         public_result = {key: result[key] for key in (
             'success', 'message', 'error_message', 'token_rotated',

@@ -717,6 +717,12 @@ def api_create_reauthorization_job():
     scope, channel = data.get('scope', 'selected'), data.get('channel', 'auto')
     if scope not in ('selected', 'failed') or channel not in ('auto', 'graph', 'imap'):
         return jsonify(success=False, message='授权范围或通道无效'), 400
+    engine = data.get('engine', 'http')
+    action = data.get('action', 'reauthorize')
+    if engine not in ('auto', 'browser', 'http') or action not in ('repair', 'reauthorize'):
+        return jsonify(success=False, message='授权引擎或操作无效'), 400
+    if action == 'repair' and engine not in ('auto', 'browser'):
+        return jsonify(success=False, message='自动修复需要浏览器引擎'), 400
     db = get_db()
     if scope == 'selected':
         raw_ids = data.get('account_ids')
@@ -729,9 +735,23 @@ def api_create_reauthorization_job():
     if not rows:
         return jsonify(success=False, message='没有符合条件的启用 Outlook 账号'), 400
     job_id, created = refresh_queue.submit(
-        f'reauthorize:{channel}', [row['id'] for row in rows], max(5, get_refresh_delay_seconds(db)))
+        (f'repair:{"fallback" if engine == "auto" else "browser"}:{channel}' if action == 'repair' else
+         f'reauthorize:fallback:{channel}' if engine == 'auto' else
+         f'reauthorize:browser:{channel}' if engine == 'browser' else f'reauthorize:{channel}'), [row['id'] for row in rows], max(5, get_refresh_delay_seconds(db)))
     return jsonify(success=created, job=refresh_queue.snapshot(job_id),
                    message='重新授权任务已加入后台队列' if created else '已有后台任务，请等待完成或停止任务'), 202 if created else 409
+
+
+def needs_browser_authorization(result):
+    """Only escalate unsupported/interactive HTTP flows, not transport errors."""
+    details = ' '.join(str(result.get(key) or '') for key in ('error', 'details')).lower()
+    if any(marker in details for marker in ('timeout', 'timed out', 'connection', 'proxyerror',
+                                           '密码不正确或账号不存在', 'wrong password', 'invalid credentials',
+                                           '账号被锁定', '账号被禁用')):
+        return False
+    return bool(result.get('needs_interaction')) or any(marker in details for marker in (
+        'flow token', 'ppft', '授权码', '额外验证', '安全信息', '登录凭据验证失败',
+        'interaction_required', 'consent_required', 'mfa', 'captcha', '验证码'))
 
 
 def reauthorize_queued_account(account, channel, conn):
@@ -744,6 +764,7 @@ def reauthorize_queued_account(account, channel, conn):
     email = account['email']
     password = ''
     new_token = ''
+    used_engine = 'http'
 
     def failure(message, needs_interaction=False):
         # Do not persist secrets embedded in upstream errors or exception text.
@@ -755,17 +776,32 @@ def reauthorize_queued_account(account, channel, conn):
                                   message, db_conn=conn, token_rotated=False):
             raise RuntimeError('无法保存重新授权结果')
         return {'success': False, 'email': email, 'error_message': message,
-                'needs_interaction': needs_interaction, 'token_rotated': False}
+                'needs_interaction': needs_interaction, 'token_rotated': False, 'authorization_engine': used_engine}
 
     try:
         password = decrypt_data(account['password']) if account['password'] else ''
         if not password:
             return failure('缺少邮箱密码，请编辑账号补充密码后重试，或使用手动重新授权。', True)
+        use_browser = channel.startswith('browser:')
+        http_first = channel.startswith('fallback:')
+        if use_browser or http_first:
+            channel = channel.split(':', 1)[1]
         mode = channel if channel in ('graph', 'imap') else (get_account_authorization_type(account) or 'graph')
         proxy = get_account_resolved_proxy_config(dict(account), db=conn).get('proxy_url') or ''
-        result = extract_graph_refresh_token(email, password, client_id=OAUTH_CLIENT_ID,
+        extractor = extract_graph_refresh_token
+        if use_browser:
+            used_engine = 'browser'
+            from outlook_web.browser_oauth import browser_refresh_token
+            extractor = browser_refresh_token
+        result = extractor(email, password, client_id=OAUTH_CLIENT_ID,
                                              redirect_uri=OAUTH_REDIRECT_URI,
                                              scope=GRAPH_EXTRACT_SCOPE_BY_MODE[mode], proxy_url=proxy)
+        if http_first and not result.get('success') and needs_browser_authorization(result):
+            used_engine = 'browser'
+            from outlook_web.browser_oauth import browser_refresh_token
+            result = browser_refresh_token(email, password, client_id=OAUTH_CLIENT_ID,
+                                           redirect_uri=OAUTH_REDIRECT_URI,
+                                           scope=GRAPH_EXTRACT_SCOPE_BY_MODE[mode], proxy_url=proxy)
         if not result.get('success'):
             error = '；'.join(str(result.get(key) or '') for key in ('error', 'details')).strip('；')
             interactive = any(word in error.lower() for word in (
@@ -797,7 +833,8 @@ def reauthorize_queued_account(account, channel, conn):
                                   db_conn=conn, token_rotated=True):
             raise RuntimeError('无法保存重新授权结果')
         return {'success': True, 'email': email, 'token_rotated': True,
-                'authorization_type': mode, 'message': f'{graph_oauth_mode_label(mode)} 重新授权成功，新令牌已验证并保存',
+                'authorization_type': mode, 'authorization_engine': used_engine,
+                'message': f'{graph_oauth_mode_label(mode)} 重新授权成功（{"浏览器" if used_engine == "browser" else "HTTP"}），新令牌已验证并保存',
                 **get_account_refresh_timestamps(account_id, conn)}
     except Exception as exc:
         conn.rollback()

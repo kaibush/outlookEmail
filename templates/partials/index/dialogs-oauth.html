@@ -97,6 +97,7 @@
                 </div>
             </div>
             <div class="modal-footer">
+                <button class="btn btn-secondary" id="oauthBrowserAuthorizeBtn" hidden onclick="reauthorizeCurrentAccountWithBrowser()">自动重新授权，无需粘贴回调</button>
                 <button class="btn btn-secondary" onclick="hideGetRefreshTokenModal()">关闭</button>
                 <button class="btn btn-primary" id="exchangeTokenBtn" onclick="exchangeToken()">换取并预览</button>
                 <button class="btn btn-primary" id="saveTokenAccountBtn" onclick="saveTokenAccount()">直接保存（自动换取）</button>

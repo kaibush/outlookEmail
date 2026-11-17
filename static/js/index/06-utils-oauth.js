@@ -75,6 +75,8 @@
             const exchangeBtn = document.getElementById('exchangeTokenBtn');
             const saveBtn = document.getElementById('saveTokenAccountBtn');
 
+            const browserBtn = document.getElementById('oauthBrowserAuthorizeBtn');
+            if (browserBtn) browserBtn.hidden = !reauthMode;
             if (titleEl) titleEl.textContent = reauthMode ? '🔑 重新授权 Outlook 账号' : '🔑 授权并保存 Outlook 账号';
             if (sectionTitleEl) sectionTitleEl.textContent = reauthMode ? '当前账号' : '待入库账号';
             if (sectionHintEl) {
@@ -437,6 +439,13 @@
             if (typeof loadRefreshStatusList === 'function') {
                 await loadRefreshStatusList();
             }
+        }
+
+        async function reauthorizeCurrentAccountWithBrowser() {
+            const accountId = Number(oauthReauthorizeAccount?.id);
+            if (!accountId) return;
+            const submitted = await submitBrowserAuthorization([accountId], 'reauthorize');
+            if (submitted) hideGetRefreshTokenModal();
         }
 
         async function reauthorizeExistingAccount() {

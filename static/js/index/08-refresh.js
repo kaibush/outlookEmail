@@ -1294,6 +1294,36 @@
         }
 
         // 全量刷新所有账号
+        async function submitBrowserAuthorization(accountIds, action = 'reauthorize') {
+            if (!accountIds.length) { showToast('请先选择账号', 'warning'); return false; }
+            if (refreshModalState.submitting) return false;
+            const description = action === 'repair'
+                ? '先用 HTTP 刷新 Token，过期后先尝试 HTTP 重新授权，仅网页交互无法通过 HTTP 完成时启用浏览器。'
+                : '先用 HTTP 重新授权，仅需网页交互时启用浏览器自动登录和保存令牌。';
+            if (!(await showConfirmModal(`处理所选 ${accountIds.length} 个账号：${description} 验证码或二次验证需要人工处理，其余账号继续执行。`,
+                {title: '自动授权（HTTP 优先）', confirmText: '加入后台任务', danger: false}))) return false;
+            if (refreshModalState.submitting) return false;
+            refreshModalState.submitting = true;
+            try {
+                const response = await fetch('/api/accounts/reauthorization-jobs', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({scope: 'selected', channel: 'auto', engine: 'auto', action, account_ids: accountIds}),
+                });
+                const data = await response.json();
+                if (data.job) renderRefreshQueueJob(data.job);
+                showToast(data.message || '任务提交失败', data.success ? 'success' : 'warning');
+                if (data.job) await showRefreshModal();
+                return !!data.success;
+            } catch (error) {
+                showToast('未确认提交结果，请在 Token 刷新管理查看后台任务', 'warning');
+                await showRefreshModal();
+                return false;
+            } finally {
+                refreshModalState.submitting = false;
+                syncRefreshActionButtons();
+            }
+        }
+
         function syncReauthorizationButtons() {
             const busy = refreshModalState.isRunning || refreshModalState.submitting;
             const selected = document.getElementById('reauthorizeSelectedBtn');
@@ -1310,6 +1340,7 @@
                 return;
             }
             const channel = document.getElementById('reauthorizationChannel').value;
+            const engine = document.getElementById('reauthorizationEngine')?.value || 'auto';
             const count = scope === 'selected' ? accountIds.length : refreshModalState.stats?.failed_count || 0;
             if (!count) return;
             if (!(await showConfirmModal(`将使用已保存的邮箱密码重新登录 ${count} 个启用账号。新授权验证成功后才替换令牌；需要验证码或二次验证的账号会记录失败并继续下一个。确定提交吗？`,
@@ -1321,7 +1352,7 @@
             try {
                 const response = await fetch('/api/accounts/reauthorization-jobs', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({scope, channel, account_ids: accountIds}),
+                    body: JSON.stringify({scope, channel, engine, account_ids: accountIds}),
                 });
                 const data = await response.json();
                 if (data.job) renderRefreshQueueJob(data.job);
@@ -1364,7 +1395,8 @@
                 progress.value = 0;
                 return;
             }
-            const isReauthorization = String(job.mode || '').startsWith('reauthorize:');
+            const isReauthorization = /^(reauthorize|repair):/.test(String(job.mode || ''));
+            const taskLabel = String(job.mode || '').startsWith('repair:') ? '刷新 Token · HTTP 优先自动修复' : String(job.mode || '').includes(':browser:') ? '浏览器自动授权' : String(job.mode || '').includes(':fallback:') ? '重新授权 · HTTP 优先' : '重新授权';
             const labels = {queued: '等待后台执行', running: isReauthorization ? '后台重新授权中' : '后台刷新中', stopped: '已停止', completed: '已完成'};
             title.textContent = job.recovering ? '等待恢复未完成任务' :
                 (refreshModalState.stopRequested ? '停止中，等待当前账号完成' : labels[job.status] || job.status);
@@ -1373,14 +1405,14 @@
             progress.value = job.completed;
             detail.textContent = `已处理 ${job.completed} / ${job.total} · 成功 ${counts.success || 0} · 失败 ${counts.failed || 0} · 跳过 ${counts.skipped || 0} · 未处理 ${job.remaining}`;
             const updated = document.getElementById('refreshQueueUpdated');
-            updated.textContent = `${isReauthorization ? '重新授权' : 'Token 刷新'} · 更新于 ${new Date(job.updated_at * 1000).toLocaleString('zh-CN', {timeZone: getAppTimeZone()})} · 账号间隔 ${job.delay_seconds} 秒`;
+            updated.textContent = `${isReauthorization ? taskLabel : 'Token 刷新'} · 更新于 ${new Date(job.updated_at * 1000).toLocaleString('zh-CN', {timeZone: getAppTimeZone()})} · 账号间隔 ${job.delay_seconds} 秒`;
             refreshModalState.runtimeLogs = (job.results || []).map(item => {
                 const account = refreshModalState.items.find(row => row.id === item.account_id);
                 const result = item.result || {};
                 return {
                     level: item.status === 'failed' ? 'error' : 'info',
                     title: result.email || account?.email || `账号 #${item.account_id}`,
-                    detail: (result.needs_interaction ? '需人工处理：' : '') + (result.message || result.error_message || '处理完成'),
+                    detail: (result.needs_interaction ? '需人工处理：' : '') + (result.authorization_engine && !result.success ? `${result.authorization_engine === 'browser' ? '浏览器' : 'HTTP'}：` : '') + (result.message || result.error_message || '处理完成'),
                     time: new Date(item.finished_at * 1000).toLocaleString('zh-CN', {timeZone: getAppTimeZone()}),
                 };
             });
