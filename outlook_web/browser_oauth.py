@@ -58,14 +58,14 @@ def browser_refresh_token(email, password, *, client_id, redirect_uri, scope,
 
                 def observe(request):
                     target = urlsplit(request.url)
-                    if (target.scheme, target.netloc, target.path) == (callback.scheme, callback.netloc, callback.path):
+                    if (target.scheme, target.netloc, target.path or '/') == (callback.scheme, callback.netloc, callback.path or '/'):
                         captured.update(parse_qs(target.query))
 
                 page.on('request', observe)
 
                 def intercept(route):
                     target = urlsplit(route.request.url)
-                    if (target.scheme, target.netloc, target.path) == (callback.scheme, callback.netloc, callback.path):
+                    if (target.scheme, target.netloc, target.path or '/') == (callback.scheme, callback.netloc, callback.path or '/'):
                         params = parse_qs(target.query)
                         captured.update(params)
                         route.fulfill(status=200, content_type='text/html', body='Authorization received. You may close this page.')

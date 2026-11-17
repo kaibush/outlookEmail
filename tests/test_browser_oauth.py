@@ -65,7 +65,7 @@ def test_real_browser_login_and_callback_without_external_network(monkeypatch, s
     response.json.return_value = {'refresh_token':'fixture-refresh-token'}
     exchange = Mock(return_value=response)
     result = browser_refresh_token('test@example.com','fixture-password',client_id='fixture-client',
-                                   redirect_uri='http://localhost:8080/',scope='offline_access',
+                                   redirect_uri='http://localhost:8080',scope='offline_access',
                                    playwright_factory=factory,exchange=exchange,timeout_seconds=10)
     assert not browsers[0].is_connected()
     assert any('loginfmt=test%40example.com' in payload for _,payload in seen)
