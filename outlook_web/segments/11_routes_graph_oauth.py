@@ -704,3 +704,101 @@ def api_graph_extract_token_stream(task_id: str):
         worker.join(timeout=1)
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+# Formal accounts use the durable refresh queue so browser disconnects do not
+# abandon a batch. Reauthorization is explicit and never scheduled automatically.
+@app.route('/api/accounts/reauthorization-jobs', methods=['POST'])
+@login_required
+def api_create_reauthorization_job():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='请求必须是 JSON 对象'), 400
+    scope, channel = data.get('scope', 'selected'), data.get('channel', 'auto')
+    if scope not in ('selected', 'failed') or channel not in ('auto', 'graph', 'imap'):
+        return jsonify(success=False, message='授权范围或通道无效'), 400
+    db = get_db()
+    if scope == 'selected':
+        raw_ids = data.get('account_ids')
+        if not isinstance(raw_ids, list):
+            return jsonify(success=False, message='请选择账号'), 400
+        ids = normalize_refresh_account_ids(raw_ids)
+        rows = load_selected_outlook_accounts_for_refresh(db, ids)
+    else:
+        rows = load_failed_outlook_accounts_for_refresh(db)
+    if not rows:
+        return jsonify(success=False, message='没有符合条件的启用 Outlook 账号'), 400
+    job_id, created = refresh_queue.submit(
+        f'reauthorize:{channel}', [row['id'] for row in rows], max(5, get_refresh_delay_seconds(db)))
+    return jsonify(success=created, job=refresh_queue.snapshot(job_id),
+                   message='重新授权任务已加入后台队列' if created else '已有后台任务，请等待完成或停止任务'), 202 if created else 409
+
+
+def reauthorize_queued_account(account, channel, conn):
+    """Login with the stored password, validate, then atomically replace credentials.
+
+    No account upsert: deleted accounts must not be resurrected, and business
+    fields such as groups, tags, forwarding, proxies and passwords stay intact.
+    """
+    account_id = account['id']
+    email = account['email']
+    password = ''
+    new_token = ''
+
+    def failure(message, needs_interaction=False):
+        # Do not persist secrets embedded in upstream errors or exception text.
+        for secret in (password, new_token):
+            if secret:
+                message = str(message).replace(secret, '***')
+        message = graph_oauth_safe_details(message)
+        if not log_refresh_result(account_id, email, 'reauthorize_batch', 'failed',
+                                  message, db_conn=conn, token_rotated=False):
+            raise RuntimeError('无法保存重新授权结果')
+        return {'success': False, 'email': email, 'error_message': message,
+                'needs_interaction': needs_interaction, 'token_rotated': False}
+
+    try:
+        password = decrypt_data(account['password']) if account['password'] else ''
+        if not password:
+            return failure('缺少邮箱密码，请编辑账号补充密码后重试，或使用手动重新授权。', True)
+        mode = channel if channel in ('graph', 'imap') else (get_account_authorization_type(account) or 'graph')
+        proxy = get_account_resolved_proxy_config(dict(account), db=conn).get('proxy_url') or ''
+        result = extract_graph_refresh_token(email, password, client_id=OAUTH_CLIENT_ID,
+                                             redirect_uri=OAUTH_REDIRECT_URI,
+                                             scope=GRAPH_EXTRACT_SCOPE_BY_MODE[mode], proxy_url=proxy)
+        if not result.get('success'):
+            error = '；'.join(str(result.get(key) or '') for key in ('error', 'details')).strip('；')
+            interactive = any(word in error.lower() for word in (
+                '验证', '验证码', '密码', '授权码', 'flow token', 'ppft', 'mfa', 'captcha',
+                'interaction_required', 'consent_required', '登录', '安全信息'))
+            return failure(error or '自动授权失败，请检查代理或使用手动授权。', interactive)
+        client_id = str(result.get('client_id') or '').strip()
+        new_token = str(result.get('refresh_token') or '').strip()
+        if not client_id or not new_token:
+            return failure('微软未返回完整授权信息，原令牌未修改。', True)
+        # Validate the requested resource, without silently switching channels.
+        response = (request_graph_token_response(client_id, new_token, proxy_url=proxy,
+                                                 include_original_scope_fallback=True)
+                    if mode == 'graph' else request_imap_token_response(client_id, new_token, proxy_url=proxy))
+        payload = response.json() if response.status_code == 200 else {}
+        if not payload.get('access_token'):
+            return failure('新授权验证失败，原令牌未修改：' + extract_token_response_error(response))
+        new_token = extract_refresh_token_from_response(response) or new_token
+        # A user may edit or reauthorize the account while Microsoft is replying.
+        updated = conn.execute('''
+            UPDATE accounts SET client_id=?,refresh_token=?,authorization_type=?,
+                refresh_token_updated_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND status='active' AND password IS ? AND refresh_token IS ? AND client_id IS ?
+        ''', (client_id, encrypt_data(new_token), mode, account_id,
+              account['password'], account['refresh_token'], account['client_id'])).rowcount
+        if not updated:
+            return {'skipped': True, 'email': email, 'message': '账号已修改、停用或删除，未覆盖现有授权。'}
+        if not log_refresh_result(account_id, email, 'reauthorize_batch', 'success',
+                                  db_conn=conn, token_rotated=True):
+            raise RuntimeError('无法保存重新授权结果')
+        return {'success': True, 'email': email, 'token_rotated': True,
+                'authorization_type': mode, 'message': f'{graph_oauth_mode_label(mode)} 重新授权成功，新令牌已验证并保存',
+                **get_account_refresh_timestamps(account_id, conn)}
+    except Exception as exc:
+        conn.rollback()
+        return failure('重新授权失败：' + str(exc))

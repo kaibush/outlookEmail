@@ -160,3 +160,25 @@ class TokenRefreshFrontendTests(unittest.TestCase):
         self.assertTrue(result['running'])
         self.assertIn(['request', '/api/accounts/refresh-jobs', {'mode': 'selected', 'account_ids': [1]}], result['events'])
         self.assertIn(['poll'], result['events'])
+
+    def test_reauthorization_submits_selected_ids_and_channel(self):
+        result = run_frontend('''(async () => {
+            startRefreshQueuePolling = () => events.push(['poll']);
+            syncRefreshActionButtons = () => {};
+            refreshModalState.selectedAccountIds = new Set([2, 4]);
+            document.getElementById('reauthorizationChannel').value = 'imap';
+            await submitReauthorizationQueue('selected');
+            return events;
+        })()''')
+        self.assertIn(['request', '/api/accounts/reauthorization-jobs', {
+            'scope': 'selected', 'channel': 'imap', 'account_ids': [2, 4],
+        }], result)
+
+    def test_reauthorization_cancel_sends_no_request(self):
+        result = run_frontend('''(async () => {
+            refreshModalState.stats = {failed_count: 200};
+            showConfirmModal = async () => false;
+            await submitReauthorizationQueue('failed');
+            return events;
+        })()''')
+        self.assertFalse(any(event[0] == 'request' for event in result))

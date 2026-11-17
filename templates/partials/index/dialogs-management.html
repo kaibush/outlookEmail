@@ -592,6 +592,21 @@
                         </div>
                     </section>
 
+                    <section class="refresh-queue-panel" aria-label="批量重新授权">
+                        <strong>批量重新授权</strong>
+                        <p class="refresh-queue-hint">刷新令牌已失效时，使用已保存的邮箱密码重新登录微软。没有密码或需要验证码、二次验证时，请补充密码或使用列表中的“手动授权”。</p>
+                        <div class="refresh-reauthorize-actions">
+                            <label for="reauthorizationChannel">授权通道</label>
+                            <select class="form-select" id="reauthorizationChannel">
+                                <option value="auto">沿用账号通道（未设置时 Graph）</option>
+                                <option value="graph">Graph API</option>
+                                <option value="imap">IMAP OAuth</option>
+                            </select>
+                            <button class="btn btn-secondary" type="button" id="reauthorizeSelectedBtn" onclick="submitReauthorizationQueue('selected')" disabled>重新授权已选</button>
+                            <button class="btn btn-warning" type="button" id="reauthorizeFailedBtn" onclick="submitReauthorizationQueue('failed')" disabled>重新授权全部失败账号</button>
+                        </div>
+                    </section>
+
                     <section class="refresh-log-panel">
                         <div class="refresh-log-panel__head">
                             <div>
