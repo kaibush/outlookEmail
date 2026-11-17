@@ -298,12 +298,12 @@
                     const isQueueing = batchOutlookAutoAuthBtn.dataset.loading === 'true';
                     batchOutlookAutoAuthBtn.disabled = autoAuthChecked.length === 0 || isQueueing;
                     batchOutlookAutoAuthBtn.title = autoAuthChecked.length === 0
-                        ? '所选账号中没有可加入自动授权的 Outlook 账号'
-                        : '将所选 Outlook 账号加入自动化授权队列';
+                        ? '所选账号中没有可自动授权（HTTP 优先）的 Outlook 账号'
+                        : '将所选 Outlook 账号加入自动授权（HTTP 优先）队列';
                     if (!isQueueing) {
                         batchOutlookAutoAuthBtn.textContent = autoAuthChecked.length > 0
-                            ? `加入自动授权${autoAuthChecked.length !== checked.length ? ` (${autoAuthChecked.length})` : ''}`
-                            : '加入自动授权';
+                            ? `自动授权（HTTP 优先）${autoAuthChecked.length !== checked.length ? ` (${autoAuthChecked.length})` : ''}`
+                            : '自动授权（HTTP 优先）';
                     }
                 }
                 if (batchGenerateAliasesBtn) {
@@ -378,7 +378,7 @@
                 if (batchOutlookAutoAuthBtn) {
                     batchOutlookAutoAuthBtn.disabled = false;
                     batchOutlookAutoAuthBtn.dataset.loading = 'false';
-                    batchOutlookAutoAuthBtn.textContent = '加入自动授权';
+                    batchOutlookAutoAuthBtn.textContent = '自动授权（HTTP 优先）';
                     batchOutlookAutoAuthBtn.title = '';
                 }
                 if (batchGenerateAliasesBtn) {
@@ -926,123 +926,15 @@
         async function queueSelectedAccountsForOutlookAutoAuth() {
             const context = getCurrentAccountBatchSelectionContext();
             const btn = getAccountBatchButton(context, 'outlookAutoAuth');
-            if (!btn || btn.disabled) return;
-            if (context.isTempContext) {
-                showToast('临时邮箱不支持加入自动授权', 'error');
-                return;
-            }
-
-            const eligibleAccounts = getAccountBatchSelectedAccounts(context)
-                .filter(account => String(account.account_type || 'outlook').toLowerCase() !== 'imap');
-            const accountIds = eligibleAccounts
-                .map(account => normalizeAccountBatchId(account.id))
-                .filter(Number.isFinite);
-
-            if (!accountIds.length) {
-                showToast('所选账号中没有可加入自动授权的 Outlook 账号', 'error');
-                return;
-            }
-            if (!(await showConfirmModal(
-                `确定将所选 ${accountIds.length} 个 Outlook 账号加入自动授权队列吗？`,
-                { title: '批量加入自动授权', confirmText: '确认加入', danger: false }
-            ))) {
-                return;
-            }
-
-            btn.disabled = true;
-            btn.dataset.loading = 'true';
-            btn.textContent = '入队中...';
-
-            try {
-                const response = await fetch('/api/accounts/batch-outlook-auto-auth', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ account_ids: accountIds }),
-                });
-                const data = await response.json();
-                if (!data.success) {
-                    handleApiError(data, '批量加入自动授权失败');
-                    return;
-                }
-                showToast(data.message || `已处理 ${accountIds.length} 个账号`, 'success');
-                const modal = document.getElementById('outlookUploadAccountsModal');
-                if (modal && modal.classList.contains('show') && typeof loadUploadAccounts === 'function') {
-                    loadUploadAccounts();
-                }
-            } catch (error) {
-                showToast('批量加入自动授权失败: ' + error.message, 'error');
-            } finally {
-                btn.dataset.loading = 'false';
-                updateAccountBatchControls(context);
-            }
+            if (!btn || btn.disabled || context.isTempContext) return;
+            await submitBrowserAuthorization(getAccountBatchSelectedIds(context), 'reauthorize');
         }
 
         async function refreshSelectedAccounts() {
             const context = getCurrentAccountBatchSelectionContext();
             const btn = getAccountBatchButton(context, 'refresh');
-            if (!btn || btn.disabled) return;
-
-            const accountIds = getAccountBatchSelectedIds(context);
-            const refreshableCount = getAccountBatchSelectedAccounts(context)
-                .filter(account => String(account.account_type || 'outlook').toLowerCase() !== 'imap')
-                .length;
-
-            if (!accountIds.length) {
-                showToast('请先选择要刷新的邮箱', 'error');
-                return;
-            }
-            if (!refreshableCount) {
-                showToast('所选账号中没有可刷新的 Outlook 账号', 'error');
-                return;
-            }
-            if (!(await showConfirmModal(`确定要刷新所选 ${accountIds.length} 个邮箱的 Token 吗？`, { title: '批量刷新 Token', confirmText: '确认刷新', danger: false }))) {
-                return;
-            }
-
-            btn.disabled = true;
-            btn.dataset.loading = 'true';
-            btn.textContent = '刷新中...';
-
-            try {
-                const response = await fetch('/api/accounts/refresh-selected', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ account_ids: accountIds })
-                });
-                const data = await response.json();
-
-                if (!data.success) {
-                    handleApiError(data, '批量刷新失败');
-                    return;
-                }
-
-                const toastType = data.failed_count > 0 || data.skipped_count > 0 ? 'warning' : 'success';
-                const rotationSummary = typeof data.rotated_count === 'number'
-                    ? `（Token 已更新 ${data.rotated_count}，未轮换 ${data.unrotated_count}）`
-                    : '';
-                showToast(
-                    `批量刷新完成：成功 ${data.success_count}${rotationSummary}，失败 ${data.failed_count}，跳过 ${data.skipped_count}`,
-                    toastType
-                );
-
-                if (data.failed_count > 0) {
-                    await openRefreshModalWithStatus('failed');
-                } else {
-                    loadRefreshStats();
-                }
-
-                if (typeof context.clearSelection === 'function') {
-                    context.clearSelection();
-                }
-                if (typeof refreshVisibleAccountList === 'function') {
-                    await refreshVisibleAccountList(true);
-                }
-            } catch (error) {
-                showToast('批量刷新请求失败', 'error');
-            } finally {
-                btn.dataset.loading = 'false';
-                updateAccountBatchControls(context);
-            }
+            if (!btn || btn.disabled || context.isTempContext) return;
+            await submitBrowserAuthorization(getAccountBatchSelectedIds(context), 'repair');
         }
 
         async function updateForwardingForSelectedAccounts(targetEnabled) {

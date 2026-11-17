@@ -61,16 +61,17 @@ class TokenRefreshFrontendTests(unittest.TestCase):
         self.assertIn('Token 未轮换', html)
         self.assertIn('轮换结果未记录', html)
 
-    def test_batch_refresh_toast_includes_rotation_counts(self):
+    def test_main_list_refresh_submits_http_first_repair(self):
         events = run_frontend('''(async () => {
-            fetch = async () => ({json: async () => ({
-                success: true, success_count: 2, failed_count: 0, skipped_count: 0,
-                rotated_count: 1, unrotated_count: 1,
-            })});
+            syncRefreshActionButtons = () => {};
+            showRefreshModal = async () => events.push(['progress']);
             await refreshSelectedAccounts();
             return events;
         })()''')
-        self.assertIn(['toast', '批量刷新完成：成功 2（Token 已更新 1，未轮换 1），失败 0，跳过 0', 'success'], events)
+        self.assertIn(['request', '/api/accounts/reauthorization-jobs', {
+            'scope': 'selected', 'channel': 'auto', 'engine': 'auto',
+            'action': 'repair', 'account_ids': [1, 2],
+        }], events)
 
     def test_account_list_displays_last_success_and_rotation_times(self):
         html = run_frontend('''(() => {
@@ -171,7 +172,7 @@ class TokenRefreshFrontendTests(unittest.TestCase):
             return events;
         })()''')
         self.assertIn(['request', '/api/accounts/reauthorization-jobs', {
-            'scope': 'selected', 'channel': 'imap', 'account_ids': [2, 4],
+            'scope': 'selected', 'channel': 'imap', 'engine': 'auto', 'account_ids': [2, 4],
         }], result)
 
     def test_reauthorization_cancel_sends_no_request(self):

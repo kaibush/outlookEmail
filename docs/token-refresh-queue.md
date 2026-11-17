@@ -36,3 +36,17 @@ Content-Type: application/json
 ```
 
 `scope` 支持 `selected` / `failed`，`channel` 支持 `auto` / `graph` / `imap`。成功提交返回 202 和任务对象；已有活动任务返回 409。进度、停止、继续复用 `/api/accounts/refresh-jobs/latest` 和 `/api/accounts/refresh-jobs/<job_id>/stop`、`/resume`。接口不返回密码或令牌。
+
+## HTTP 优先，浏览器接管网页交互
+
+邮箱列表勾选多个账号后：
+
+- **刷新 Token**：先用 HTTP 刷新；确认 `invalid_grant`、过期或撤销授权后，尝试 HTTP 重新授权。HTTP 无法处理登录页面或交互要求时，再启动 Chromium。网络超时和明确的密码错误不会触发浏览器重复登录。
+- **自动授权（HTTP 优先）**：直接开始重新授权，同样先 HTTP，必要时才用 Chromium。
+- 原来的手动重新授权弹窗增加“自动重新授权，无需粘贴回调”，同样使用 HTTP 优先策略。
+
+Token 刷新管理中可选择 HTTP 优先、仅 HTTP、仅浏览器。后台浏览器会在隔离的临时上下文中填写账号密码，处理普通同意授权页面并捕获回调，通过 state 和 PKCE 校验后交换令牌。每个账号结束后关闭浏览器，不保存浏览器用户目录、Cookie 或截图。验证码、短信、MFA 等验证不能自动绕过，会记录为需人工处理并继续后续账号。
+
+镜像内安装 Chromium，Python 依赖包含 Playwright。非 Docker 部署需安装 Chromium，并可通过 `OAUTH_BROWSER_EXECUTABLE` 指定可执行文件（默认 `/usr/bin/chromium`）。Chromium 不支持带认证的 SOCKS5 代理，此类账号会明确报错，应为其配置 HTTP 代理；不会悄悄改为直连。
+
+接口额外参数：`engine: "auto"` 表示 HTTP 优先、浏览器回退；`"http"` 和 `"browser"` 显式选择单一引擎。`action: "repair"` 表示先刷新再修复过期授权，`"reauthorize"` 表示重新授权。省略 engine 保留旧 HTTP 行为；页面默认使用 auto。

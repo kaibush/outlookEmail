@@ -596,6 +596,12 @@
                         <strong>批量重新授权</strong>
                         <p class="refresh-queue-hint">刷新令牌已失效时，使用已保存的邮箱密码重新登录微软。没有密码或需要验证码、二次验证时，请补充密码或使用列表中的“手动授权”。</p>
                         <div class="refresh-reauthorize-actions">
+                            <label for="reauthorizationEngine">授权方式</label>
+                            <select class="form-select" id="reauthorizationEngine">
+                                <option value="auto">HTTP 优先，需网页交互时自动浏览器</option>
+                                <option value="browser">仅浏览器自动登录（Chromium）</option>
+                                <option value="http">HTTP 自动登录</option>
+                            </select>
                             <label for="reauthorizationChannel">授权通道</label>
                             <select class="form-select" id="reauthorizationChannel">
                                 <option value="auto">沿用账号通道（未设置时 Graph）</option>
