@@ -2799,3 +2799,23 @@
                 display: none;
             }
         }
+
+/* Durable token refresh task, using the active skin's semantic colors. */
+.refresh-queue-panel {
+    padding: 16px;
+    border: 1px solid var(--skin-border);
+    border-radius: 12px;
+    color: var(--skin-text);
+    min-width: 0;
+}
+.refresh-queue-heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+.refresh-queue-heading span,
+.refresh-queue-hint { color: var(--skin-text-muted); font-size: 12px; }
+.refresh-queue-panel progress { width: 100%; height: 12px; margin-top: 12px; }
+.refresh-queue-panel p { margin: 8px 0 0; line-height: 1.6; overflow-wrap: anywhere; }

@@ -1528,7 +1528,10 @@ def init_scheduler():
                 app_tzinfo = get_app_timezone_info()
                 scheduler = BackgroundScheduler(timezone=app_tzinfo)
                 enable_scheduled = get_setting('enable_scheduled_refresh', 'true').lower() == 'true'
-                jobs_added = False
+                scheduler.add_job(process_refresh_queue, 'interval', seconds=5,
+                                  id='refresh_queue', max_instances=1, coalesce=True,
+                                  replace_existing=True)
+                jobs_added = True
 
                 if enable_scheduled:
                     use_cron = get_setting('use_cron_schedule', 'false').lower() == 'true'
@@ -1643,61 +1646,23 @@ def ensure_scheduler_started():
 
 
 def scheduled_refresh_task():
-    """定时刷新任务（由调度器调用）"""
-    from datetime import datetime, timedelta
-
-    try:
-        with app.app_context():
-            enable_scheduled = get_setting('enable_scheduled_refresh', 'true').lower() == 'true'
-
-            if not enable_scheduled:
-                safe_console_print(f"[定时任务] 定时刷新已禁用，跳过执行")
-                return
-
-            use_cron = get_setting('use_cron_schedule', 'false').lower() == 'true'
-
-            if use_cron:
-                safe_console_print(f"[定时任务] 使用 Cron 调度，直接执行刷新...")
-                trigger_refresh_internal()
-                safe_console_print(f"[定时任务] Token 刷新完成")
-                return
-
-            refresh_interval_days = int(get_setting('refresh_interval_days', '30'))
-            last_refresh = build_refresh_stats().get('last_refresh_time')
-
-        if last_refresh:
-            last_refresh_time = datetime.fromisoformat(last_refresh)
-            next_refresh_time = last_refresh_time + timedelta(days=refresh_interval_days)
-            if datetime.now() < next_refresh_time:
-                safe_console_print(f"[定时任务] 距离上次刷新未满 {refresh_interval_days} 天，跳过本次刷新")
-                return
-
-        safe_console_print(f"[定时任务] 开始执行 Token 刷新...")
-        trigger_refresh_internal()
-        safe_console_print(f"[定时任务] Token 刷新完成")
-
-    except Exception as e:
-        safe_console_print(f"[定时任务] 执行失败：{str(e)}")
-
-
-ensure_scheduler_started()
+    """Enqueue accounts individually due for maintenance, including new imports."""
+    with app.app_context():
+        if get_setting('enable_scheduled_refresh', 'true').lower() != 'true':
+            return
+        return trigger_refresh_internal()
 
 
 def trigger_refresh_internal():
-    """内部触发刷新（不通过 HTTP）"""
-    try:
-        result = run_full_refresh('scheduled', 'scheduled')
-    except TokenRefreshInProgressError as exc:
-        safe_console_print(f"[定时任务] 跳过执行：{str(exc)}")
-        return {
-            'type': 'conflict',
-            'total': 0,
-            'success_count': 0,
-            'failed_count': 0,
-            'message': str(exc),
-        }
-    safe_console_print(f"[定时任务] 刷新结果：总计 {result['total']}，成功 {result['success_count']}，失败 {result['failed_count']}")
-    return result
+    with app.app_context():
+        try:
+            job_id, created = enqueue_refresh_job('scheduled')
+            return {'type': 'queued' if created else 'conflict', 'job_id': job_id}
+        except ValueError:
+            return {'type': 'idle', 'message': '暂无到期账号'}
+
+
+ensure_scheduler_started()
 
 
 # ==================== 错误处理 ====================

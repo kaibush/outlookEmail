@@ -3144,7 +3144,10 @@ class RefreshTokenProxyFallbackTests(unittest.TestCase):
         default_response = self._token_response(200, {'access_token': 'access-token'})
         with patch.object(web_outlook_app.requests, 'request',
                           side_effect=[default_response, FakeResponse()]) as request:
-            web_outlook_app.trigger_refresh_internal()
+            queued = web_outlook_app.trigger_refresh_internal()
+            self.assertEqual(queued['type'], 'queued')
+            self.assertEqual(request.call_count, 0)
+            web_outlook_app.process_refresh_queue()
 
         self.assertEqual(request.call_count, 2)
         self.assertEqual(request.call_args_list[0].kwargs['data']['scope'],
@@ -3167,13 +3170,7 @@ class RefreshTokenProxyFallbackTests(unittest.TestCase):
                 ''',
                 (self.account_id,),
             ).fetchone()
-            snapshot_row = db.execute(
-                '''
-                SELECT trigger_type, status, total_count, success_count, failed_count, finished_at
-                FROM token_refresh_state
-                WHERE scope_key = 'all_outlook'
-                '''
-            ).fetchone()
+            snapshot_row = web_outlook_app.refresh_queue.snapshot(queued['job_id'])
 
         self.assertEqual(account_row['last_refresh_status'], 'success')
         self.assertIsNone(account_row['last_refresh_error'])
@@ -3182,11 +3179,11 @@ class RefreshTokenProxyFallbackTests(unittest.TestCase):
         logs = self.client.get(f'/api/accounts/{self.account_id}/refresh-logs').get_json()['logs']
         self.assertIs(logs[0]['token_rotated'], True)
         self.assertEqual(logs[0]['message'], '刷新成功，Token 已更新')
-        self.assertEqual(snapshot_row['trigger_type'], 'scheduled')
-        self.assertEqual(snapshot_row['status'], 'success')
-        self.assertEqual(snapshot_row['total_count'], 1)
-        self.assertEqual(snapshot_row['success_count'], 1)
-        self.assertEqual(snapshot_row['failed_count'], 0)
+        self.assertEqual(snapshot_row['mode'], 'scheduled')
+        self.assertEqual(snapshot_row['status'], 'completed')
+        self.assertEqual(snapshot_row['total'], 1)
+        self.assertEqual(snapshot_row['counts'].get('success', 0), 1)
+        self.assertEqual(snapshot_row['counts'].get('failed', 0), 0)
         self.assertIsNotNone(snapshot_row['finished_at'])
 
     def test_run_full_refresh_marks_failed_snapshot_on_unexpected_exception(self):
