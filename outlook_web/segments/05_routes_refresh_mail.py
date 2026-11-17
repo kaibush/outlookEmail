@@ -36,6 +36,8 @@ def process_queued_refresh_account(account_id, mode, conn):
     if not is_outlook_refreshable_account(account):
         return {'skipped': True, 'message': '账号已删除或停用，跳过刷新'}
     try:
+        if mode.startswith('reauthorize:'):
+            return reauthorize_queued_account(account, mode.split(':', 1)[1], conn)
         result = refresh_outlook_account_token(
             account, 'scheduled' if mode == 'scheduled' else 'manual_queue', db_conn=conn)
         # Queue results contain public diagnostics only, never credentials.

@@ -122,6 +122,7 @@
             }
             const neverBtn = document.getElementById('refreshNeverBtn');
             if (neverBtn) neverBtn.disabled = refreshModalState.isRunning || refreshModalState.submitting;
+            syncReauthorizationButtons();
             syncRefreshBatchControls();
             syncRefreshPaginationControls();
         }
@@ -323,6 +324,7 @@
 
         function renderRefreshStats(stats) {
             refreshModalState.stats = stats || null;
+            syncReauthorizationButtons();
             setRefreshSnapshotCounts(stats?.total ?? 0, stats?.success_count ?? 0, stats?.failed_count ?? 0);
             document.getElementById('refreshFilterCountAll').textContent = String(stats?.total ?? 0);
             document.getElementById('refreshFilterCountSuccess').textContent = String(stats?.success_count ?? 0);
@@ -580,6 +582,7 @@
         }
 
         function syncRefreshBatchControls() {
+            syncReauthorizationButtons();
             syncAccountStatusBatchControls(getRefreshAccountBatchContext(), refreshModalState.isRunning);
             const selectedIds = getSelectedRefreshAccountIds();
             const visibleIds = getVisibleRefreshAccountIds();
@@ -842,7 +845,7 @@
                         <td class="refresh-account-status-cell">${renderRefreshStatusBadge(item.last_refresh_status, isRunning)}${rotationHtml}</td>
                         <td class="refresh-account-action">
                             ${canRetry
-                                ? `<button class="btn btn-sm btn-primary" type="button" onclick="retrySingleAccount(${item.id}, '${escapeJs(item.email)}')">重试</button>`
+                                ? `<button class="btn btn-sm btn-primary" type="button" onclick="retrySingleAccount(${item.id}, '${escapeJs(item.email)}')">重试</button> <button class="btn btn-sm btn-secondary" type="button" onclick="manuallyReauthorizeRefreshAccount(${accountId})">手动授权</button>`
                                 : '<span class="refresh-account-time">-</span>'}
                         </td>
                     </tr>
@@ -1291,6 +1294,57 @@
         }
 
         // 全量刷新所有账号
+        function syncReauthorizationButtons() {
+            const busy = refreshModalState.isRunning || refreshModalState.submitting;
+            const selected = document.getElementById('reauthorizeSelectedBtn');
+            const failed = document.getElementById('reauthorizeFailedBtn');
+            if (selected) selected.disabled = busy || !getSelectedRefreshAccountIds().length;
+            if (failed) failed.disabled = busy || !(refreshModalState.stats?.failed_count > 0);
+        }
+
+        async function submitReauthorizationQueue(scope) {
+            if (refreshModalState.isRunning || refreshModalState.submitting) return;
+            const accountIds = scope === 'selected' ? getSelectedRefreshAccountIds() : [];
+            if (scope === 'selected' && !accountIds.length) {
+                showToast('请先在邮箱列表中勾选账号', 'warning');
+                return;
+            }
+            const channel = document.getElementById('reauthorizationChannel').value;
+            const count = scope === 'selected' ? accountIds.length : refreshModalState.stats?.failed_count || 0;
+            if (!count) return;
+            if (!(await showConfirmModal(`将使用已保存的邮箱密码重新登录 ${count} 个启用账号。新授权验证成功后才替换令牌；需要验证码或二次验证的账号会记录失败并继续下一个。确定提交吗？`,
+                {title: '批量重新授权', confirmText: '开始重新授权', danger: false}))) return;
+            // Recheck after the confirmation dialog, in case another task arrived.
+            if (refreshModalState.isRunning || refreshModalState.submitting) return;
+            refreshModalState.submitting = true;
+            syncReauthorizationButtons();
+            try {
+                const response = await fetch('/api/accounts/reauthorization-jobs', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({scope, channel, account_ids: accountIds}),
+                });
+                const data = await response.json();
+                if (data.job) renderRefreshQueueJob(data.job);
+                showToast(data.message || (data.success ? '授权任务已提交' : '提交失败'), data.success ? 'success' : 'error');
+                startRefreshQueuePolling();
+            } catch (error) {
+                showToast('未确认提交结果，正在查询后台任务，请勿重复提交', 'warning');
+                startRefreshQueuePolling();
+            } finally {
+                refreshModalState.submitting = false;
+                syncRefreshActionButtons();
+            }
+        }
+
+        async function manuallyReauthorizeRefreshAccount(accountId) {
+            if (refreshModalState.isRunning) {
+                showToast('请先停止后台任务，再手动重新授权', 'warning');
+                return;
+            }
+            hideRefreshModal();
+            await showReauthorizeAccountModal(accountId);
+        }
+
         function stopRefreshQueuePolling() {
             refreshModalState.pollGeneration += 1;
             window.clearTimeout(refreshModalState.pollTimer);
@@ -1310,7 +1364,8 @@
                 progress.value = 0;
                 return;
             }
-            const labels = {queued: '等待后台执行', running: '后台刷新中', stopped: '已停止', completed: '已完成'};
+            const isReauthorization = String(job.mode || '').startsWith('reauthorize:');
+            const labels = {queued: '等待后台执行', running: isReauthorization ? '后台重新授权中' : '后台刷新中', stopped: '已停止', completed: '已完成'};
             title.textContent = job.recovering ? '等待恢复未完成任务' :
                 (refreshModalState.stopRequested ? '停止中，等待当前账号完成' : labels[job.status] || job.status);
             const counts = job.counts || {};
@@ -1318,14 +1373,14 @@
             progress.value = job.completed;
             detail.textContent = `已处理 ${job.completed} / ${job.total} · 成功 ${counts.success || 0} · 失败 ${counts.failed || 0} · 跳过 ${counts.skipped || 0} · 未处理 ${job.remaining}`;
             const updated = document.getElementById('refreshQueueUpdated');
-            updated.textContent = `更新于 ${new Date(job.updated_at * 1000).toLocaleString('zh-CN', {timeZone: getAppTimeZone()})} · 账号间隔 ${job.delay_seconds} 秒`;
+            updated.textContent = `${isReauthorization ? '重新授权' : 'Token 刷新'} · 更新于 ${new Date(job.updated_at * 1000).toLocaleString('zh-CN', {timeZone: getAppTimeZone()})} · 账号间隔 ${job.delay_seconds} 秒`;
             refreshModalState.runtimeLogs = (job.results || []).map(item => {
                 const account = refreshModalState.items.find(row => row.id === item.account_id);
                 const result = item.result || {};
                 return {
                     level: item.status === 'failed' ? 'error' : 'info',
                     title: result.email || account?.email || `账号 #${item.account_id}`,
-                    detail: result.message || result.error_message || '处理完成',
+                    detail: (result.needs_interaction ? '需人工处理：' : '') + (result.message || result.error_message || '处理完成'),
                     time: new Date(item.finished_at * 1000).toLocaleString('zh-CN', {timeZone: getAppTimeZone()}),
                 };
             });
